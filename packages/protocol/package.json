@@ -1,0 +1,49 @@
+{
+	"name": "@anvaya.sh/padma-protocol",
+	"version": "1.0.0",
+	"description": "Transport-neutral CBOR protocol for remote padma sessions",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"README.md"
+	],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsc -p tsconfig.build.json",
+		"test": "vitest --run",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"keywords": [
+		"padma",
+		"protocol",
+		"cbor",
+		"binary",
+		"framing"
+	],
+	"author": "Anvaya Works",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Anvaya-SH/padma.git",
+		"directory": "packages/protocol"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"dependencies": {
+		"@anvaya.sh/chord": "^1.0.0",
+		"typebox": "1.3.27"
+	},
+	"devDependencies": {
+		"shx": "0.4.0",
+		"vitest": "4.1.11"
+	}
+}

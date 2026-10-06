@@ -1,0 +1,10 @@
+{
+	"name": "@anvaya.sh/padma-example-plugin",
+	"version": "1.0.0",
+	"private": true,
+	"type": "module",
+	"peerDependencies": {
+		"@anvaya.sh/chord": "^0.84.4",
+		"@anvaya.sh/padma-coding-agent": "^0.84.4"
+	}
+}

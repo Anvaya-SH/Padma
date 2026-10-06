@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Padma · Saṃvāda [conversation export]</title>
+  <link rel="icon" href="{{PADMA_LOGO}}">
+  <style>
+{{CSS}}
+    html { color-scheme: light; }
+    body { background: #faf4ed; }
+    .padma-brand { display: flex; align-items: center; gap: 14px; margin: 20px 0 24px; color: #4A342A; }
+    .padma-brand img { width: 52px; height: 52px; object-fit: contain; }
+    .padma-brand strong { display: block; font-size: 24px; }
+    .padma-brand small { display: block; margin-top: 4px; color: #7D5A44; }
+    .sidebar-filters { flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <button id="hamburger" title="Open sidebar"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><rect x="5" y="6" width="2" height="12"/><path d="M6 12h10c1 0 2 0 2-2V8"/></svg></button>
+  <div id="sidebar-overlay"></div>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-controls">
+          <input type="text" class="sidebar-search" id="tree-search" placeholder="Anveṣaṇa [search]…">
+        </div>
+        <div class="sidebar-filters">
+          <button class="filter-btn active" data-filter="default" title="Hide settings entries">Mūla [default]</button>
+          <button class="filter-btn" data-filter="no-tools" title="Default minus tool results">Ayantra [no tools]</button>
+          <button class="filter-btn" data-filter="user-only" title="Only user messages">Prayoktṛ [user]</button>
+          <button class="filter-btn" data-filter="labeled-only" title="Only labeled entries">Cihnita [labeled]</button>
+          <button class="filter-btn" data-filter="all" title="Show everything">Sarva [all]</button>
+          <button class="sidebar-close" id="sidebar-close" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="tree-container" id="tree-container"></div>
+      <div class="tree-status" id="tree-status"></div>
+    </aside>
+    <div id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize session tree sidebar"></div>
+    <main id="content">
+      <div class="padma-brand"><img src="{{PADMA_LOGO}}" alt="Padma"><div><strong>Padma</strong><small>Saṃvāda [conversation] · Niryāta [export]</small></div></div>
+      <div id="header-container"></div>
+      <div id="messages"></div>
+    </main>
+    <div id="image-modal" class="image-modal">
+      <img id="modal-image" src="" alt="">
+    </div>
+  </div>
+
+  <script id="session-data" type="application/json">{{SESSION_DATA}}</script>
+
+  <!-- Vendored libraries -->
+  <script>{{MARKED_JS}}</script>
+
+  <!-- highlight.js -->
+  <script>{{HIGHLIGHT_JS}}</script>
+
+  <!-- Main application code -->
+  <script>
+{{JS}}
+  </script>
+</body>
+</html>

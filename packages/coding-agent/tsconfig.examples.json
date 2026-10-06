@@ -1,0 +1,16 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"paths": {
+			"@anvaya.sh/padma-coding-agent": ["./src/index.ts"],
+			"@anvaya.sh/padma-coding-agent/hooks": ["./src/core/hooks/index.ts"],
+			"@anvaya.sh/padma-tui": ["../tui/src/index.ts"],
+			"@anvaya.sh/padma-ai": ["../ai/src/index.ts"],
+			"typebox": ["../../node_modules/typebox"]
+		},
+		"skipLibCheck": true
+	},
+	"include": ["examples/**/*.ts"],
+	"exclude": ["node_modules", "dist"]
+}

@@ -1,0 +1,15 @@
+{
+	"name": "@anvaya.sh/padma-coding-agent-install",
+	"version": "1.0.0",
+	"private": true,
+	"description": "Lockfile root used by the Padma installer and updater.",
+	"dependencies": {
+		"@anvaya.sh/padma-coding-agent": "1.0.0"
+	},
+	"overrides": {
+		"protobufjs": "7.6.6"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

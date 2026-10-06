@@ -1,0 +1,46 @@
+{
+  "status": "passed",
+  "validated_at_utc": "2026-10-05T10:11:22.912120+00:00",
+  "graphify_version": "0.9.76",
+  "sql_grammar_version": "0.3.11",
+  "nodes": 20564,
+  "edges": 67612,
+  "communities": 443,
+  "source_files_represented": 1911,
+  "sql_nodes": 21,
+  "relations": {
+    "calls": 17087,
+    "re_exports": 2150,
+    "references": 4289,
+    "imports_from": 9333,
+    "extends": 18,
+    "imports": 15731,
+    "implements": 182,
+    "inherits": 263,
+    "cites": 18,
+    "contains": 13063,
+    "defines": 6,
+    "dynamic_import": 24,
+    "indexes": 9,
+    "method": 4980,
+    "rationale_for": 11,
+    "indirect_call": 448
+  },
+  "graph_sha256": "252cc24059edd77a36f42f85f0d5c341df00b8c93ea7d17e52a3e78e968f77b4",
+  "checks": [
+    "nonempty graph",
+    "unique node IDs",
+    "valid edge endpoints",
+    "ignored/generated files excluded",
+    "source paths exist",
+    "SQL schema indexed",
+    "known symbols indexed",
+    "report and visualizations exist"
+  ],
+  "limitations": [
+    "Local code-only snapshot: documentation and media semantic extraction omitted",
+    "Some data/config/source files yield no symbols in Graphify",
+    "Graphify reported parser recovery in packages/tui/test/latex.test.ts; extraction may be partial",
+    "Interactive force graph is a bounded overview; graph.json contains the full exported graph"
+  ]
+}

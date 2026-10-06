@@ -1,0 +1,67 @@
+{
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"paths": {
+			"@anvaya.sh/chord": ["./packages/chord/src/index.ts"],
+			"@anvaya.sh/chord/bundler": ["./packages/chord/src/bundler.ts"],
+			"@anvaya.sh/chord/context": ["./packages/chord/src/context/index.ts"],
+			"@anvaya.sh/chord/delta": ["./packages/chord/src/delta/index.ts"],
+			"@anvaya.sh/chord/node": ["./packages/chord/src/node.ts"],
+			"@anvaya.sh/padma-telemetry": ["./packages/telemetry/src/index.ts"],
+			"@anvaya.sh/padma-telemetry/testing": ["./packages/telemetry/src/testing/index.ts"],
+			"@anvaya.sh/padma-codemode": ["./packages/codemode/src/index.ts"],
+			"@anvaya.sh/padma-codemode/declarations": ["./packages/codemode/src/declarations.ts"],
+			"@anvaya.sh/padma-codemode/source": ["./packages/codemode/src/source.ts"],
+			"@anvaya.sh/padma-codemode/worker": ["./packages/codemode/src/runtime/worker.ts"],
+			"@anvaya.sh/padma-mcp": ["./packages/mcp/src/index.ts"],
+			"@anvaya.sh/padma-mcp/oauth": ["./packages/mcp/src/oauth/index.ts"],
+			"@anvaya.sh/padma-mcp/testing": ["./packages/mcp/src/testing/index.ts"],
+			"@anvaya.sh/padma-ai": ["./packages/ai/src/index.ts"],
+			"@anvaya.sh/padma-ai/oauth": ["./packages/ai/src/oauth.ts"],
+			"@anvaya.sh/padma-ai/*": ["./packages/ai/src/*.ts", "./packages/ai/src/providers/*.ts"],
+			"@anvaya.sh/padma-ai/dist/*": ["./packages/ai/src/*"],
+			"@anvaya.sh/padma-durable": ["./packages/durable/src/index.ts"],
+			"@anvaya.sh/padma-durable/testing": ["./packages/durable/src/testing/index.ts"],
+			"@anvaya.sh/padma-durable/*": [
+				"./packages/durable/src/*.ts",
+				"./packages/durable/src/*/index.ts",
+				"./packages/durable/src/*"
+			],
+			"@anvaya.sh/padma-agent-core": ["./packages/agent/src/index.ts"],
+			"@anvaya.sh/padma-coding-agent": ["./packages/coding-agent/src/index.ts"],
+			"@anvaya.sh/padma-coding-agent/experimental/plugin": [
+				"./packages/coding-agent/src/experimental/plugin.ts"
+			],
+			"@anvaya.sh/padma-coding-agent/hooks": ["./packages/coding-agent/src/core/hooks/index.ts"],
+			"@anvaya.sh/padma-coding-agent/*": ["./packages/coding-agent/src/*"],
+			"@anvaya.sh/padma-protocol": ["./packages/protocol/src/index.ts"],
+			"@anvaya.sh/padma-protocol/*": ["./packages/protocol/src/*"],
+			"@anvaya.sh/padma-client": ["./packages/client/src/index.ts"],
+			"@anvaya.sh/padma-client/unix": ["./packages/client/src/unix.ts"],
+			"@anvaya.sh/padma-client/*": ["./packages/client/src/*"],
+			"@anvaya.sh/padma-server": ["./packages/server/src/index.ts"],
+			"@anvaya.sh/padma-server/unix": ["./packages/server/src/transports/unix/index.ts"],
+			"@anvaya.sh/padma-server/*": ["./packages/server/src/*"],
+			"typebox": ["./node_modules/typebox"],
+			"@anvaya.sh/padma-tui": ["./packages/tui/src/index.ts"],
+			"@anvaya.sh/padma-tui/*": ["./packages/tui/src/*"],
+			"@anvaya.sh/padma-agent-old": ["./packages/agent-old/src/index.ts"],
+			"@anvaya.sh/padma-agent-old/*": ["./packages/agent-old/src/*"],
+			"capabilities/jalacitra": ["./capabilities/jalacitra/index.ts"],
+			"capabilities/jalacitra/*": ["./capabilities/jalacitra/*"]
+		}
+	},
+	"include": [
+		"scripts/model-catalog-protocol.ts",
+		"scripts/model-catalog-protocol.test.ts",
+		"packages/*/src/**/*",
+		"packages/*/test/**/*",
+		"packages/coding-agent/examples/**/*",
+		"packages/agent/examples/**/*",
+		"capabilities/**/*"
+	],
+	"exclude": ["**/dist/**", "packages/coding-agent/examples/extensions/gondolin/**"]
+}
