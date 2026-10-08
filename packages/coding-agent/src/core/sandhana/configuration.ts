@@ -36,13 +36,21 @@ export const DEFAULT_AVARTANA_CONFIGURATION = {
 		"live_tool_stream",
 	],
 };
+/** Historical route quotas are available only by explicit application selection. */
+export const LEGACY_ROUTE_CALIBRATION: KernelConfiguration["routes"] = {
+	SAKSHAT: { execution: 3, ticks: 3, verification_reserve: 0 },
+	MADHYAMA: { execution: 40, ticks: 12, verification_reserve: 6 },
+	GAMBHIRA: { execution: 100, ticks: 40, verification_reserve: 15 },
+};
+
 export const DEFAULT_KERNEL_CONFIGURATION: KernelConfiguration = {
 	version: "sandhana/1",
+	calibration_profile: "STANDARD/1",
 	avartana: DEFAULT_AVARTANA_CONFIGURATION,
 	routes: {
-		SAKSHAT: { execution: 3, ticks: 3, verification_reserve: 0 },
-		MADHYAMA: { execution: 40, ticks: 12, verification_reserve: 6 },
-		GAMBHIRA: { execution: 100, ticks: 40, verification_reserve: 15 },
+		SAKSHAT: { execution: 256, ticks: 128, verification_reserve: 0 },
+		MADHYAMA: { execution: 256, ticks: 128, verification_reserve: 0 },
+		GAMBHIRA: { execution: 256, ticks: 128, verification_reserve: 0 },
 	},
 	resources: {
 		preflight: 2,
@@ -60,7 +68,9 @@ export const DEFAULT_KERNEL_CONFIGURATION: KernelConfiguration = {
 	artifact: { max_bytes: 8 * 1024 * 1024, retention_ms: null },
 	stagnation: { diagnose: 4, stop: 7 },
 	branches: { active: 3, depth: 2 },
-	timeouts: { shell_ms: 120000, observation_ms: 30000 },
+	// Builds and other foreground commands can outlast two minutes. Keep a finite
+	// shell backstop aligned with the default mission allowance; applications may narrow it.
+	timeouts: { shell_ms: 30 * 60 * 1000, observation_ms: 30000 },
 };
 
 export function validateConfiguration(value: unknown): asserts value is KernelConfiguration {
@@ -82,6 +92,8 @@ export function resolveConfiguration(input?: unknown): KernelConfiguration {
 		canonical(input);
 		if (!Value.Check(KernelConfigurationInputSchema, input))
 			throw new Error("Invalid versioned kernel configuration input");
+		if (input.calibration_profile) result.calibration_profile = input.calibration_profile;
+		if (input.calibration_profile === "LEGACY/1") result.routes = structuredClone(LEGACY_ROUTE_CALIBRATION);
 		for (const route of ["SAKSHAT", "MADHYAMA", "GAMBHIRA"] as const)
 			Object.assign(result.routes[route], input.routes?.[route]);
 		Object.assign(result.resources, input.resources);

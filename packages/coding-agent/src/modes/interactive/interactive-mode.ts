@@ -1121,13 +1121,12 @@ export class InteractiveMode {
 		]);
 		this.fdPath = fdPath;
 
-		// Enable the remaining input handlers only after managed-tool setup completes.
+		// Initialize extensions first so resources are shown before messages
+		await this.rebindCurrentSession();
+		// A startup submission must use the initialized extension and command handlers.
 		this.setupKeyHandlers();
 		this.setupEditorSubmitHandler();
 		this.ui.requestRender();
-
-		// Initialize extensions first so resources are shown before messages
-		await this.rebindCurrentSession();
 
 		// Render initial messages AFTER showing loaded resources
 		this.renderInitialMessages();
@@ -3221,7 +3220,7 @@ export class InteractiveMode {
 
 	private handleStartupSubmit(text: string): void {
 		this.editor.setText(text);
-		if (text.trim().length > 0) this.startupSubmitPending = text;
+		this.startupSubmitPending = text.trim().length > 0 ? text : undefined;
 		this.showStatus("Ārambha [starting] · Preparing your workspace…");
 	}
 
@@ -3461,6 +3460,15 @@ export class InteractiveMode {
 			}
 			this.editor.addToHistory?.(text);
 		};
+		this.editor.onSubmit = this.defaultEditor.onSubmit;
+		const pending = this.startupSubmitPending;
+		this.startupSubmitPending = undefined;
+		if (pending !== undefined && this.editor.getText() === pending) {
+			this.editor.setText("");
+			Promise.resolve(this.defaultEditor.onSubmit(pending)).catch((error: unknown) => {
+				this.showError(error instanceof Error ? error.message : String(error));
+			});
+		}
 	}
 
 	private subscribeToAgent(): void {
@@ -4660,6 +4668,7 @@ export class InteractiveMode {
 	// =========================================================================
 
 	clearEditor(): void {
+		this.startupSubmitPending = undefined;
 		this.editor.setText("");
 		this.ui.requestRender();
 	}

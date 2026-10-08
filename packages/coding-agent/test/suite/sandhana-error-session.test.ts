@@ -6,6 +6,8 @@ import { Value } from "typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isFailure } from "../../src/core/sandhana/errors.ts";
 import { ProposalFailureSchema } from "../../src/core/sandhana/records.ts";
+import { assertShellDispatchReady } from "../../src/core/tools/dispatch-guard.ts";
+import { getShellEnv } from "../../src/utils/shell.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 const harnesses: Harness[] = [];
@@ -329,7 +331,7 @@ describe("failure reporting through the actual Sandhana session", () => {
 		expect(kernel.store.records(state.mission_id)).toEqual(records);
 		expect(kernel.terminal).toBeNull();
 		expect(kernel.store.get(state.mission_id, state.cognitive_tick!, "CognitiveTick").status).toBe("OPEN");
-		expect(h.session.getLastAssistantText()).toContain("EXECUTION_FAILED");
+		expect(h.session.getLastAssistantText()).toContain("The task could not be completed.");
 		expect(h.getPendingResponseCount()).toBe(1);
 		expect(h.eventsOfType("agent_end")).toHaveLength(1);
 	});
@@ -373,12 +375,15 @@ describe("failure reporting through the actual Sandhana session", () => {
 	it("keeps an actual uncertain effect and its reservation when tick settlement also fails", async () => {
 		let calls = 0;
 		let target = "";
+		let environment: NodeJS.ProcessEnv = {};
 		const tool = {
 			name: "bash",
 			label: "Lost fixture response",
 			description: "Actual local fixture effect",
-			parameters: Type.Object({ command: Type.String() }),
-			execute: async () => {
+			parameters: Type.Object({ command: Type.String(), cwd: Type.String(), timeout: Type.Optional(Type.Number()) }),
+			execute: async (_id: string, value: unknown) => {
+				const args = value as { command: string; cwd: string };
+				assertShellDispatchReady({ command: args.command, cwd: args.cwd, env: environment });
 				calls++;
 				writeFileSync(target, "actual effect");
 				throw new Error("fixture response lost after effect");
@@ -387,13 +392,27 @@ describe("failure reporting through the actual Sandhana session", () => {
 		const h = await createHarness({ tools: [tool] });
 		harnesses.push(h);
 		h.session.sandhana.register(tool, "bash");
+		environment = { ...getShellEnv() };
+		for (const key of [
+			"PADMA_SESSION_ID",
+			"PADMA_SESSION_FILE",
+			"PADMA_PROVIDER",
+			"PADMA_MODEL",
+			"PADMA_REASONING_LEVEL",
+		])
+			delete environment[key];
+		environment.PADMA_SESSION_ID = h.session.sessionId;
+		environment.PADMA_PROVIDER = h.getModel().provider;
+		environment.PADMA_MODEL = h.getModel().id;
+		environment.PADMA_REASONING_LEVEL = h.session.thinkingLevel;
 		target = join(h.tempDir, "effect.txt");
 		writeFileSync(join(h.tempDir, "check.cjs"), "// exact declared fixture command\n");
 		const store = h.session.sandhana.store;
 		const commit = store.commit.bind(store);
 		vi.spyOn(store, "commit").mockImplementation((expected, state, records, artifacts) => {
-			if (records.some((record) => record.record_type === "CognitiveTick" && record.status === "SETTLED"))
+			if (records.some((record) => record.record_type === "CognitiveTick" && record.status === "SETTLED")) {
 				throw new Error("fixture tick persistence failure");
+			}
 			return commit(expected, state, records, artifacts);
 		});
 		h.setResponses([
@@ -401,7 +420,7 @@ describe("failure reporting through the actual Sandhana session", () => {
 				type: "toolCall",
 				id: "uncertain-effect",
 				name: "bash",
-				arguments: { command: "node check.cjs" },
+				arguments: { command: "node check.cjs", cwd: h.tempDir },
 			}),
 			fauxAssistantMessage("This extra decision must remain unused"),
 		]);

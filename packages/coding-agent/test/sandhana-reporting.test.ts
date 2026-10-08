@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SandhanaKernel } from "../src/core/sandhana/kernel.ts";
 import { type Draft, makeRecord, resources } from "../src/core/sandhana/records.ts";
-import { boundedText, renderTerminal, terminalText, userTerminalText } from "../src/core/sandhana/reporting.ts";
+import {
+	boundedText,
+	renderTerminal,
+	renderTerminalDetails,
+	terminalText,
+	userTerminalText,
+} from "../src/core/sandhana/reporting.ts";
 import { MissionStore } from "../src/core/sandhana/store.ts";
 import { createBashTool, createReadTool } from "../src/core/tools/index.ts";
 
@@ -45,8 +51,9 @@ describe("terminal output admission", () => {
 		expect(text).toContain("complete read\n");
 		// The chat projection carries the outcome only; ledger detail stays persisted.
 		const chat = userTerminalText(report);
+		expect(chat).toBe(text);
 		expect(chat).toContain("complete read\n");
-		expect(chat).toContain("VERIFIED_COMPLETE");
+		expect(chat).toContain("Completed and verified.");
 		expect(chat).not.toContain("sandhana://");
 		expect(chat).not.toContain("[evidence ");
 		expect(chat).not.toContain('"dependencies":');
@@ -78,8 +85,8 @@ describe("terminal output admission", () => {
 		const text = terminalText(report);
 		expect(report.status).toBe("BUDGET_EXHAUSTED");
 		expect(report.output_omitted).toBe(true);
-		expect(text).toContain("BUDGET_EXHAUSTED");
-		expect(text).toContain("Report view truncated");
+		expect(text).toContain("configured task limit");
+		expect(text).toContain("Output shortened");
 		expect(text).not.toContain("�");
 		expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
 		expect(f.kernel.state!.used.output_bytes).toBe(before + Buffer.byteLength(text));
@@ -108,17 +115,14 @@ describe("terminal output admission", () => {
 	it("keeps an unknown effect and its no-repeat instruction ahead of optional output", async () => {
 		const f = fixture(undefined, "run: node effect.cjs");
 		f.kernel.register(
-			{
-				...createBashTool(f.cwd),
-				execute: async () => {
-					writeFileSync(join(f.cwd, "effect"), "happened");
-					return {
-						content: [{ type: "text", text: "unconfirmed process" }],
-						details: {},
-						structuredContent: { output_complete: false },
-					};
+			createBashTool(f.cwd, {
+				operations: {
+					exec: async () => {
+						writeFileSync(join(f.cwd, "effect"), "happened");
+						return { exitCode: 0, outputComplete: false };
+					},
 				},
-			},
+			}),
 			"bash",
 		);
 		await expect(f.kernel.execute("bash", "unknown", { command: "node effect.cjs" })).rejects.toThrow(
@@ -129,8 +133,8 @@ describe("terminal output admission", () => {
 		const report = f.kernel.finalize();
 		const text = terminalText(report);
 		expect(report.status).toBe("OUTCOME_UNKNOWN");
-		expect(text).toContain(`Unknown operation: ${report.unknown_operation}`);
-		expect(text).toContain("do not repeat the effect");
+		expect(text).not.toContain(report.unknown_operation!);
+		expect(text).toContain("before running it again");
 		expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
 		expect(f.kernel.state!.used.execution).toBe(1);
 		expect(readFileSync(join(f.cwd, "effect"), "utf8")).toBe("happened");
@@ -221,11 +225,12 @@ describe("bounded UTF-8 rendering", () => {
 		});
 		const text = userTerminalText(report);
 		// Chat shows the redacted outcome; per-check audit detail stays persisted.
-		expect(text).toContain("BLOCKED");
+		expect(text).toContain("information or permission");
 		expect(text).not.toContain("Checks actually run:");
 		expect(text).not.toContain("Verified:");
-		expect(terminalText(report)).toContain("npm run check: PASSED (workspace)");
-		expect(terminalText(report)).toContain("Regression check unavailable");
+		const audit = renderTerminalDetails(report, 4096).text;
+		expect(audit).toContain("npm run check: PASSED (workspace)");
+		expect(audit).toContain("Regression check unavailable");
 		for (const secret of [
 			"private-limitation",
 			"private-presentation",

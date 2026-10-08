@@ -4,6 +4,9 @@
 
 ### Added
 
+- Added a current-tool system guide covering execution, background operations, evidence retrieval, compaction, memory, and verification.
+- Added explicit legacy Sandhana calibration; standard missions retain one outer allowance across routes and derive protected capacity from acceptance work.
+- Added bounded native stdout/stderr views with explicit stream omissions in shell evidence.
 - Added finite, explicitly scoped context search expansion and deterministic evidence ranking with inspectable selection features.
 - Added exact user approval responses through the existing prompt/RPC entry, with fresh preparation, one prepared-action grant and preserved mission spending and deadline.
 - Added a read-only RPC authorization view for retained denied preparations, with exact action/target references, bounded effect details and client validation that excludes private arguments.
@@ -31,6 +34,27 @@
 
 ### Fixed
 
+- Fixed rejected native coverage proposals suppressing the first bounded assessment of actual passing tests; repeated assessment and planning-only rejection guards remain enforced.
+- Fixed multi-file behavioral verification reading pending checkpoint promotions through committed storage, rejecting valid coverage and losing the final result.
+- Fixed early repair completion skipping coverage assessment after required tests passed; current retained checks receive one bounded assessment before finalization.
+- Fixed explicitly requested named repair tests being treated as optional work and rejected at diagnosis; retained check obligations protect execution without replacing semantic proof.
+- Fixed interrupted assistant responses exposing unfinished internal control proposals; the preceding useful answer and raw diagnostic response are preserved.
+- Fixed ordinary task delivery exposing internal status codes and operation IDs, and read-only answers being replaced by artifact-verification notices after successful reads.
+- Fixed verified task summaries being replaced by completion boilerplate; the useful answer now passes the same final verification and output admission as the persisted report.
+- Fixed background completion racing with a wait decision and ending a task before the model could retrieve and report actual output.
+- Fixed Windows memory storage nesting inside a private mission path instead of sharing the logical session directory, causing SQLite open failures and splitting shared memory storage.
+- Fixed automatic memory extraction creating unrelated records after an explicit instruction not to store other memories.
+- Fixed context and memory tools displaying control records in collapsed results; background work now shows plain progress and retains optional diagnostics.
+- Fixed retained tool artifacts being treated as current workspace files, and compaction discarding earlier source reads needed by the same decision.
+- Fixed prompt replacement hooks dropping the current harness guide and rejected new input charging presentation to the previous mission.
+- Fixed the stagnation guard stopping before a source-bound verification plan or after a real behavioral check; current retained sources and checks receive one bounded planning or assessment response with tools disabled.
+- Fixed retained source references incorrectly saying their artifacts were unavailable, prompting unnecessary retrieval instead of reusing current source reads.
+- Fixed native verification decisions losing validated per-case plans and rejection reasons; bounded model context now supplies the accepted citations and actual feedback without treating a plan as passing proof.
+- Fixed long shell commands requesting up to 30 minutes being cancelled at the former two-minute default; explicit shorter shell limits remain enforced.
+- Fixed short repair sessions exhausting context on superseded tool declarations; compaction retains current native sections, tools and mission authority.
+- Fixed validated checkpoints becoming unusable after a later failed candidate; historical recovery proof is retained and new promotion still requires current verification.
+- Fixed executor mutation before invocation, mismatched terminal output charging, and generic token/cookie exposure in public views.
+- Fixed prompts submitted during startup being lost; initialized handlers consume unchanged pending text once and preserve edited drafts.
 - Fixed public session events bypassing cumulative output-byte admission; omitted payloads now fence new provider and tool launches while actual launched results remain governed.
 - Fixed scoped foreground checks testing only one current hypothesis on a shared source; one captured invocation now updates each selected branch without duplicating cost.
 - Fixed initial behavioral checks being excluded from protected verification capacity; source-bound plans admit the exact current check without supplying an unexecuted verdict.

@@ -9,6 +9,7 @@
 import type { AssistantMessage, ImageContent } from "@anvaya.sh/padma-ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
+import { publicAgentEvent } from "../core/sandhana/public-output.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
 
@@ -141,7 +142,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			const lastMessage = state.messages[state.messages.length - 1];
 
 			if (lastMessage?.role === "assistant") {
-				const assistantMsg = lastMessage as AssistantMessage;
+				const event = publicAgentEvent({ type: "message_end", message: lastMessage });
+				if (event?.type !== "message_end") throw new Error("Assistant output could not be projected");
+				const assistantMsg = event.message as AssistantMessage;
 				if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
 					console.error(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
 					exitCode = 1;

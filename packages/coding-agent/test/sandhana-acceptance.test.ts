@@ -24,6 +24,8 @@ async function fixture(
 	testSource = `${prefix}${emptyCase}\n${validCase}`,
 	execution = 40,
 	partialTestRead = false,
+	runCheck = true,
+	instruction = "Fix parser accepting an invalid empty value; preserve valid existing values",
 ) {
 	const cwd = mkdtempSync(join(tmpdir(), "padma-acceptance-"));
 	const store = new MissionStore(":memory:");
@@ -37,7 +39,7 @@ async function fixture(
 	});
 	writeFileSync(join(cwd, "parser.cjs"), "module.exports = (value) => value;");
 	writeFileSync(join(cwd, "parser.test.cjs"), testSource);
-	kernel.captureInput("Fix parser accepting an invalid empty value; preserve valid existing values", "USER");
+	kernel.captureInput(instruction, "USER");
 	kernel.begin("");
 	const test = await kernel.execute("read", "test-source", {
 		path: "parser.test.cjs",
@@ -45,7 +47,7 @@ async function fixture(
 	});
 	await kernel.execute("write", "patch", { path: "parser.cjs", content: implementation });
 	const source = await kernel.execute("read", "implementation-source", { path: "parser.cjs" });
-	await kernel.execute("bash", "current-cases", { command });
+	if (runCheck) await kernel.execute("bash", "current-cases", { command });
 	const testObservation = (test.details as { sandhana: { observation_id: string } }).sandhana.observation_id;
 	const implementationObservation = (source.details as { sandhana: { observation_id: string } }).sandhana
 		.observation_id;
@@ -78,28 +80,38 @@ function assess(kernel: SandhanaKernel, proposals: CoverageProposal[]) {
 }
 
 describe("requirement-specific current behavioral acceptance", () => {
-	it.each(["current", "stale", "partial"] as const)(
-		"coverage question admission retains its bound after reopening: %s",
-		async (inputs) => {
-			const f = await fixture(fixed, prefix + emptyCase, 10, inputs === "partial");
+	it.each([
+		{ inputs: "current", submitted: false },
+		{ inputs: "stale", submitted: false },
+		{ inputs: "partial", submitted: false },
+		{ inputs: "current", submitted: true },
+		{ inputs: "stale", submitted: true },
+		{ inputs: "partial", submitted: true },
+	])(
+		"coverage question admission retains its bound after reopening (inputs: $inputs, submitted: $submitted)",
+		async ({ inputs, submitted }) => {
+			const execution = submitted ? 40 : 7;
+			const f = await fixture(fixed, prefix + emptyCase, execution, inputs === "partial");
+			expect(f.kernel.verificationDue()).toBe(!submitted);
+			if (submitted) expect(f.kernel.beginCoverageAssessment()).toBe(false);
 			if (inputs === "stale")
 				writeFileSync(join(f.cwd, "parser.cjs"), "module.exports = () => 'changed outside the mission';");
-			expect(f.kernel.beginCoverageAssessment()).toBe(inputs === "current");
+			expect(f.kernel.beginCoverageAssessment(submitted)).toBe(inputs === "current");
 			if (inputs === "current") {
 				assess(f.kernel, f.proposals);
 				expect(f.kernel.ready()).toBe(false);
-				expect(f.kernel.beginCoverageAssessment()).toBe(false);
+				expect(f.kernel.beginCoverageAssessment(submitted)).toBe(false);
 			}
 			const reopened = new SandhanaKernel({
 				cwd: () => f.cwd,
 				session: () => "acceptance",
 				store: f.store,
-				limits: { execution: 10 },
+				limits: { execution },
 			});
 			reopened.register(createReadTool(f.cwd), "read");
 			reopened.register(createWriteTool(f.cwd), "write");
 			reopened.register(createBashTool(f.cwd), "bash");
-			expect(reopened.beginCoverageAssessment()).toBe(false);
+			expect(reopened.beginCoverageAssessment(submitted)).toBe(false);
 			expect(reopened.state!.used.execution).toBe(4);
 			expect(reopened.state!.used.ticks).toBe(inputs === "current" ? 1 : 0);
 			expect(
@@ -117,6 +129,138 @@ describe("requirement-specific current behavioral acceptance", () => {
 			).toHaveLength(inputs === "current" ? 1 : 0);
 		},
 	);
+	it("an early submission without an actual check does not admit a planning-only assessment", async () => {
+		const f = await fixture(fixed, `${prefix}${emptyCase}\n${validCase}`, 40, false, false);
+		expect(f.kernel.verificationDue()).toBe(false);
+		expect(f.kernel.beginCoverageAssessment(true)).toBe(false);
+		expect(f.kernel.finalize().status).toBe("PARTIALLY_COMPLETE");
+	});
+	it.each(["before check", "after check", "admitted assessment"] as const)(
+		"a rejected proposal only suppresses an already admitted assessment of actual checks: %s",
+		async (rejection) => {
+			const f = await fixture(fixed, `${prefix}${emptyCase}\n${validCase}`, 40, false, rejection !== "before check");
+			if (rejection === "admitted assessment") expect(f.kernel.beginCoverageAssessment(true)).toBe(true);
+			assess(
+				f.kernel,
+				f.proposals.map((proposal) => ({
+					...proposal,
+					applicability: "INCONCLUSIVE",
+					citations: [proposal.citations[1], proposal.citations[1]],
+				})),
+			);
+			expect(f.kernel.ready()).toBe(false);
+			if (rejection === "before check") await f.kernel.execute("bash", "required-after-rejection", { command });
+			expect(f.kernel.beginCoverageAssessment(true)).toBe(rejection !== "admitted assessment");
+			const reopened = new SandhanaKernel({ cwd: () => f.cwd, session: () => "acceptance", store: f.store });
+			expect(reopened.beginCoverageAssessment(true)).toBe(false);
+			if (rejection !== "admitted assessment") {
+				assess(f.kernel, f.proposals);
+				expect(f.kernel.finalize().status).toBe("VERIFIED_COMPLETE");
+			} else expect(f.kernel.finalize().status).toBe("PARTIALLY_COMPLETE");
+			expect(f.kernel.state!.used.execution).toBe(4);
+			expect(
+				f.kernel.state!.operations.filter(
+					(ref) =>
+						f.store.get(
+							f.kernel.state!.mission_id,
+							f.store.get(f.kernel.state!.mission_id, ref, "OperationRecord").prepared_ref,
+							"PreparedAction",
+						).operation_class === `SHELL:${command}`,
+				),
+			).toHaveLength(1);
+		},
+	);
+	it("a rejected planning-only proposal cannot start another planning assessment without actual results", async () => {
+		const f = await fixture(fixed, `${prefix}${emptyCase}\n${validCase}`, 6, false, false);
+		assess(
+			f.kernel,
+			f.proposals.map((proposal) => ({
+				...proposal,
+				applicability: "INCONCLUSIVE",
+				citations: [proposal.citations[1], proposal.citations[1]],
+			})),
+		);
+		expect(f.kernel.verificationDue()).toBe(true);
+		expect(f.kernel.beginCoverageAssessment()).toBe(false);
+		expect(f.kernel.finalize().status).toBe("PARTIALLY_COMPLETE");
+	});
+	it.each([false, true])("multi-file coverage commits recoverable checkpoints (grouped: %s)", async (grouped) => {
+		const formatterSource = "module.exports = (value) => value.trim();";
+		const formatterCase = "test('trims whitespace', () => assert.equal(formatter(' value '), 'value'));";
+		const f = await fixture(
+			fixed,
+			`${prefix}const formatter = require('./formatter.cjs');\n${emptyCase}\n${validCase}\n${formatterCase}`,
+			40,
+			false,
+			false,
+			"Fix parser.cjs to reject empty input and formatter.cjs to trim whitespace while preserving valid inputs.",
+		);
+		writeFileSync(join(f.cwd, "formatter.cjs"), "module.exports = (value) => value;");
+		await f.kernel.execute("write", "formatter-patch", { path: "formatter.cjs", content: formatterSource });
+		const formatter = await f.kernel.execute("read", "formatter-source", { path: "formatter.cjs" });
+		await f.kernel.execute("bash", "combined-cases", { command });
+		const proposal = f.proposals[0];
+		const preservation = {
+			...proposal.citations[1],
+			case_name: "preserves valid",
+			quote: validCase,
+		};
+		const formatterImplementation = {
+			observation_id: (formatter.details as { sandhana: { observation_id: string } }).sandhana.observation_id,
+			role: "IMPLEMENTATION" as const,
+			quote: formatterSource,
+		};
+		const formatterAssertion = {
+			...proposal.citations[1],
+			case_name: "trims whitespace",
+			quote: formatterCase,
+		};
+		const proposals: CoverageProposal[] = grouped
+			? [
+					{
+						...proposal,
+						case_names: ["rejects empty", "preserves valid"],
+						citations: [...proposal.citations, preservation],
+					},
+					{
+						...proposal,
+						case_names: ["trims whitespace"],
+						citations: [formatterImplementation, proposal.citations[0], formatterAssertion],
+					},
+				]
+			: [
+					{
+						...proposal,
+						case_names: ["rejects empty", "preserves valid", "trims whitespace"],
+						citations: [...proposal.citations, preservation, formatterImplementation, formatterAssertion],
+					},
+				];
+		assess(f.kernel, proposals);
+		expect(
+			f.store
+				.records(f.kernel.state!.mission_id)
+				.filter(
+					(record) =>
+						record.record_type === "EvidenceRecord" &&
+						record.payload &&
+						typeof record.payload === "object" &&
+						"rejected_coverage" in record.payload,
+				),
+		).toEqual([]);
+		expect(f.kernel.finalize().status).toBe("VERIFIED_COMPLETE");
+		const reopened = new SandhanaKernel({ cwd: () => f.cwd, session: () => "acceptance", store: f.store });
+		expect(reopened.terminal?.status).toBe("VERIFIED_COMPLETE");
+		expect(reopened.state!.used.execution).toBe(6);
+		const points = reopened.state!.best.map((ref) =>
+			f.store.get(reopened.state!.mission_id, ref, "CheckpointRecord"),
+		);
+		expect(new Set(points.map((point) => point.target))).toEqual(
+			new Set([join(f.cwd, "parser.cjs"), join(f.cwd, "formatter.cjs")]),
+		);
+		expect(points.every((point) => point.level === "MISSION_VERIFIED")).toBe(true);
+		const records = new Set(f.store.records(reopened.state!.mission_id).map((record) => record.record_id));
+		expect(points.every((point) => point.verification_refs.every((ref) => records.has(ref)))).toBe(true);
+	});
 	it("links both natural obligations to actual cases and a recoverable patch, with model interpretation separate from proof", async () => {
 		const f = await fixture();
 		assess(f.kernel, f.proposals);
@@ -173,7 +317,7 @@ describe("requirement-specific current behavioral acceptance", () => {
 		const f = await fixture(
 			"module.exports = (value) => { if (value === '') throw new Error('empty'); return value.toUpperCase(); };",
 			`${prefix}${emptyCase}\n${validCase}`,
-			10,
+			7,
 		);
 		assess(f.kernel, f.proposals);
 		const before = f.kernel.state!;

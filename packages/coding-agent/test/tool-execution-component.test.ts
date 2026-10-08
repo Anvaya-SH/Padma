@@ -108,7 +108,9 @@ describe("ToolExecutionComponent parity", () => {
 			component.setExpanded(expanded);
 			const rendered = stripAnsi(component.render(200).join("\n"));
 			expect(rendered).toContain("npm run check");
-			expect(rendered).toContain("RUNNING: Process started");
+			expect(rendered).toContain("Running.");
+			expect(rendered).not.toContain("RUNNING");
+			if (expanded) expect(rendered).toContain("Process started");
 			for (const privateText of ["sandhana_operation", "arguments", "private-handle", "private-proof"])
 				expect(rendered).not.toContain(privateText);
 		}

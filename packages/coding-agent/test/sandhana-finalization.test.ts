@@ -85,9 +85,12 @@ async function processCandidate(kind: "PROCESS" | "QUALITY", configuration?: Ker
 	return { ...f, assessment };
 }
 
-function finalizeCurrent(f: ReturnType<typeof fixture> & { assessment: RecordOf<"VerificationReport"> }) {
+function finalizeCurrent(
+	f: ReturnType<typeof fixture> & { assessment: RecordOf<"VerificationReport"> },
+	completionMessage?: string,
+) {
 	const before = f.kernel.state!;
-	const terminal = f.kernel.finalize();
+	const terminal = f.kernel.finalize(undefined, undefined, completionMessage);
 	const after = f.kernel.state!;
 	const proof = f.store.get(after.mission_id, terminal.verification_report_ref!, "VerificationReport");
 	expect(after.mission_id).toBe(before.mission_id);
@@ -100,6 +103,12 @@ function finalizeCurrent(f: ReturnType<typeof fixture> & { assessment: RecordOf<
 }
 
 describe("current evidence at finalization after candidate assessment", () => {
+	it("admits a useful completion summary only after current evidence passes", async () => {
+		const f = await contentCandidate();
+		const { terminal } = finalizeCurrent(f, "Updated candidate.txt to the requested content.");
+		expect(terminal.status).toBe("VERIFIED_COMPLETE");
+		expect(terminal.presentation).toBe("Updated candidate.txt to the requested content.");
+	});
 	it("keeps unchanged CONTENT proof valid without dispatch, and charges live retrieval to the same ledger", async () => {
 		const f = await contentCandidate();
 		const { before, after, terminal, proof } = finalizeCurrent(f);
@@ -116,8 +125,9 @@ describe("current evidence at finalization after candidate assessment", () => {
 		const f = await contentCandidate();
 		if (change === "changed") writeFileSync(join(f.cwd, "candidate.txt"), "external edit");
 		else unlinkSync(join(f.cwd, "candidate.txt"));
-		const { terminal, proof } = finalizeCurrent(f);
+		const { terminal, proof } = finalizeCurrent(f, "Updated candidate.txt to the requested content.");
 		expect(terminal.status).toBe("PARTIALLY_COMPLETE");
+		expect(terminal.presentation).toBeUndefined();
 		expect(proof.completion_status).toBe("INCONCLUSIVE");
 		expect(proof.results[0].result).toBe("INCONCLUSIVE");
 		expect(proof.candidate_refs).toEqual([]);
@@ -161,14 +171,14 @@ describe("current evidence at finalization after candidate assessment", () => {
 		writeFileSync(join(f.cwd, "candidate.txt"), "old");
 		writeFileSync(join(f.cwd, "quality.test.cjs"), "// retained test source");
 		f.kernel.register(
-			{
-				...createBashTool(f.cwd),
-				execute: async () => ({
-					content: [{ type: "text", text: output }],
-					details: {},
-					structuredContent: { exit_code: 0, output, output_complete: true },
-				}),
-			},
+			createBashTool(f.cwd, {
+				operations: {
+					exec: async (_command, _cwd, { onData }) => {
+						onData(Buffer.from(output));
+						return { exitCode: 0, outputComplete: true };
+					},
+				},
+			}),
 			"bash",
 		);
 		f.start({

@@ -71,7 +71,9 @@ export class RecordConflict extends SandhanaError {
 export class MissionStore {
 	private db: DatabaseSync;
 	readonly databasePath: string;
+	readonly logicalDatabasePath: string;
 	constructor(path: string) {
+		this.logicalDatabasePath = path === ":memory:" ? path : resolve(path);
 		if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 		const opened = openPrivateMissionStore(path, (database) => {
 			if (path !== ":memory:" && process.platform !== "win32") chmodSync(path, 0o600);
@@ -634,6 +636,13 @@ export class MissionStore {
 			? this.get(mission, contract.configuration_ref, "KernelConfiguration")
 			: null;
 		if (configuration) validateConfiguration(configuration.value);
+		if (
+			previous &&
+			previous.route !== state.route &&
+			(canonical(previous.ceilings) !== canonical(state.ceilings) ||
+				previous.verification_reserve !== state.verification_reserve)
+		)
+			throw new Error("Route transition cannot change the captured outer allowance");
 		validateCognitiveTickTransition(this, state, previous, additions);
 		validateSchedules(this, state, previous, additions);
 		const priorConstraints = previous?.operation_constraints ?? [];
@@ -737,23 +746,53 @@ export class MissionStore {
 				throw new Error("Best checkpoint must remain in the active checkpoint projection");
 			const point = this.get(mission, ref, "CheckpointRecord");
 			const artifact = this.get(mission, point.artifact_ref, "Artifact");
+			const retained = previous?.best.includes(ref) === true;
 			if (point.level === "EXPERIMENTAL" || artifact.purpose !== "DELIVERED" || artifact.target !== point.target)
 				throw new Error("Best checkpoint requires validated delivered bytes for its target");
 			if (
 				point.preimage !== artifact.digest ||
-				point.preimage !== digest(this.artifact(mission, point.artifact_ref))
+				(!retained && point.preimage !== digest(this.artifact(mission, point.artifact_ref)))
 			)
 				throw new Error("Best checkpoint bytes do not match their delivered artifact");
 			for (const requirementId of point.coverage) {
 				const requirement = requirements.find((candidate) => candidate.requirement_id === requirementId);
 				if (
 					!requirement ||
-					requirement.status !== "VERIFIED" ||
-					requirement.target !== point.target ||
-					requirement.generation !== artifact.generation ||
-					!point.verification_refs.some((verification) => requirement.evidence.includes(verification))
+					!requirement.target ||
+					(!retained &&
+						(requirement.status !== "VERIFIED" ||
+							!point.verification_refs.some((ref) => requirement.evidence.includes(ref)))) ||
+					(requirement.rule === "SEMANTIC"
+						? !inside(requirement.target, point.target)
+						: requirement.target !== point.target) ||
+					!point.verification_refs.some((ref) => {
+						const evidence = this.records(mission).find((record) => record.record_id === ref);
+						if (
+							evidence?.record_type !== "EvidenceRecord" ||
+							evidence.kind !== "VERIFICATION" ||
+							evidence.provenance !== "KERNEL" ||
+							!evidence.requirement_ids.includes(requirementId) ||
+							!evidence.payload ||
+							typeof evidence.payload !== "object" ||
+							!("result" in evidence.payload) ||
+							evidence.payload.result !== "PASSED"
+						)
+							return false;
+						const payload = evidence.payload as Record<string, unknown>;
+						const identityMatches =
+							requirement.rule === "SEMANTIC"
+								? payload.rule === "SEMANTIC" &&
+									payload.dependencies !== null &&
+									typeof payload.dependencies === "object" &&
+									point.target in payload.dependencies &&
+									(payload.dependencies as Record<string, unknown>)[point.target] === artifact.generation
+								: evidence.target_generation === artifact.generation;
+						// Best-state coverage is historical proof of these recoverable bytes.
+						// A later failed candidate must not rewrite or discard that proof.
+						return identityMatches && evidence.revision <= point.revision;
+					})
 				)
-					throw new Error("Best checkpoint coverage lacks current target-specific verification");
+					throw new Error("Best checkpoint coverage lacks artifact-specific passing verification");
 			}
 		}
 		if (new Set(requirements.map((req) => req.requirement_id)).size !== requirements.length)

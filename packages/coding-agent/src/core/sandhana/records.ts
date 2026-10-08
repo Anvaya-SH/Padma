@@ -125,6 +125,7 @@ const contextConfiguration = Type.Object(
 export const KernelConfigurationSchema = Type.Object(
 	{
 		version: Type.Literal("sandhana/1"),
+		calibration_profile: Type.Optional(choice("STANDARD/1", "LEGACY/1")),
 		routes: Type.Object(
 			{ SAKSHAT: routeConfiguration, MADHYAMA: routeConfiguration, GAMBHIRA: routeConfiguration },
 			{ additionalProperties: false },
@@ -147,6 +148,7 @@ export type KernelConfiguration = Static<typeof KernelConfigurationSchema>;
 export const KernelConfigurationInputSchema = Type.Object(
 	{
 		version: Type.Literal("sandhana/1"),
+		calibration_profile: Type.Optional(choice("STANDARD/1", "LEGACY/1")),
 		routes: Type.Optional(
 			Type.Partial(
 				Type.Object(

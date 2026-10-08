@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import type { JsonObject } from "@anvaya.sh/padma-ai";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import { localCheck } from "./checks.ts";
 import { observeTarget, routeFor, signalsForExact } from "./code.ts";
 import { resolveConfiguration, routeBudget, validateConfiguration } from "./configuration.ts";
 import {
@@ -110,8 +111,10 @@ export function extractShellRequests(instruction: string, structured?: Structure
 	if (/^run:\s*\S/i.test(text)) return [{ command: text.slice(4).trimStart() }];
 	if (/^execute:\s*\S/i.test(text)) return [{ command: text.slice(8).trimStart() }];
 	const candidates: { command: string; cwd?: string; start: number; end: number }[] = [];
-	for (const match of instruction.matchAll(/\b(?:run|execute)\s+`([^`]+)`/gi))
+	for (const match of instruction.matchAll(/\b(?:run|execute)\s+`([^`]+)`/gi)) {
+		if (/\b(?:do not|don't|never)\s+$/i.test(instruction.slice(0, match.index))) continue;
 		candidates.push({ command: match[1], start: match.index, end: match.index + match[0].length });
+	}
 
 	const explicit =
 		/(?:^|[.;!?]\s+|,\s+)(?:please\s+)?(?:can you\s+)?(?:run|execute)(?:\s+(?:a|the))?(?:\s+(?:shell|terminal|bash))?\s+command[:\s]+(?:"([^"\n]+)"|'([^'\n]+)'|`([^`\n]+)`|([^\n,;]+))/gi;
@@ -126,10 +129,17 @@ export function extractShellRequests(instruction: string, structured?: Structure
 				end: match.index + match[0].length,
 			});
 	}
+	// A named local test followed by sentence punctuation is a complete command,
+	// rather than shell arguments containing the rest of the repair instruction.
+	const namedCheck =
+		/(?:^|[.;!?]\s+|,\s+)(?:then\s+)?(?:please\s+)?(?:can you\s+)?(?:run|execute)\s+(node\s+--test\s+[\w./-]+\.(?:test|spec)\.[cm]?[jt]sx?(?:\s+[\w./-]+\.(?:test|spec)\.[cm]?[jt]sx?)*)(?=\s*(?:[.;!?](?:\s|$)|$))/gi;
+	for (const match of instruction.matchAll(namedCheck))
+		candidates.push({ command: match[1], start: match.index, end: match.index + match[0].length });
 
 	const direct =
 		/(?:^|[.;!?]\s+|,\s+)(?:please\s+)?(?:can you\s+)?(?:run|execute)\s+(?:"([^"\n]+)"|'([^'\n]+)'|((?:python|python3|node|npm|npx|pytest|cargo|go|dotnet|bash|sh|git)\b[^\n,;]+))/gi;
 	for (const match of instruction.matchAll(direct)) {
+		if (candidates.some((candidate) => candidate.start === match.index)) continue;
 		const command = match[1] ?? match[2];
 		const request = command === undefined && match[3] ? naturalShellRequest(match[3]) : { command };
 		if (request.command)
@@ -144,9 +154,12 @@ export function extractShellRequests(instruction: string, structured?: Structure
 	// An outer literal wins over command-like text inside it. Overlapping
 	// recognizers cannot mint a second grant from quoted data.
 	const requests = new Map<string, ShellRequest>();
+	const quoted = [...instruction.matchAll(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`/g)];
 	let consumed = -1;
 	for (const candidate of candidates.sort((a, b) => a.start - b.start || b.end - a.end)) {
 		if (candidate.start < consumed) continue;
+		if (quoted.some((span) => candidate.start > span.index && candidate.start < span.index + span[0].length))
+			continue;
 		consumed = candidate.end;
 		const remaining = instruction.slice(candidate.end);
 		const outside = /^\s+in\s+(?:the\s+)?(?:dir|directory|folder)\s+/i.test(remaining)
@@ -224,8 +237,19 @@ export function compile(
 		cwd: observeTarget(root, request.cwd ?? ".", mission, 1, session, undefined, "DIRECTORY").binding.canonical_path,
 	}));
 	const shell_commands = [...new Set(shellRequests.map((request) => request.command))];
-	const quality_checks = structured?.quality_checks ?? [];
+	const quality_checks =
+		structured?.quality_checks ??
+		(editing
+			? [
+					...new Set(
+						shellRequests
+							.filter((request) => request.cwd === root && localCheck(request.command, root))
+							.map((request) => request.command),
+					),
+				]
+			: []);
 	const isShellRunRequest =
+		!editing &&
 		shell_commands.length === 1 &&
 		(instruction.startsWith("run:") ||
 			instruction.startsWith("execute:") ||
@@ -331,12 +355,44 @@ export function compile(
 	const resourceOverrides: unknown = configured ?? {};
 	if (!Value.Check(Type.Partial(ResourceCeilingsSchema), resourceOverrides))
 		throw new Error("Invalid configured resource overrides");
+	// Protect concrete acceptance work, rather than a route quota or percentage.
+	// A semantic coding check needs implementation/test source and one behavioral run.
+	// These are admission estimates; they do not claim an available oracle or grant a command.
+	const capturedConfiguration = structuredClone(configuration);
+	if (capturedConfiguration.calibration_profile === "STANDARD/1") {
+		const checks = new Set(quality_checks.map((command) => canonical([root, command])));
+		const contents = new Set<string>();
+		let behavior = false;
+		for (const requirement of requirements) {
+			if (requirement.rule === "PROCESS" && requirement.expected)
+				checks.add(canonical([requirement.target, requirement.expected]));
+			if (requirement.rule === "CONTENT" && requirement.expected !== null) contents.add(requirement.target!);
+			if (requirement.rule === "SEMANTIC" && editing) behavior = true;
+		}
+		const planned = checks.size + contents.size + (behavior ? 3 : 0);
+		for (const settings of Object.values(capturedConfiguration.routes))
+			if (settings.verification_reserve === 0)
+				settings.verification_reserve = Math.min(
+					planned,
+					settings.execution,
+					resourceOverrides.execution ?? settings.execution,
+				);
+	}
+	// Route calibration selects the initial mission envelope. Later route changes
+	// must retain that envelope, including an explicitly selected legacy profile.
+	const initialBudget = { ...capturedConfiguration.routes[route] };
+	for (const selected of ["SAKSHAT", "MADHYAMA", "GAMBHIRA"] as const)
+		capturedConfiguration.routes[selected] = { ...initialBudget };
 	const configuredRecord = makeRecord(mission, 1, "KernelConfiguration", {
 		source: "APPLICATION",
-		value: configuration,
+		value: capturedConfiguration,
 		resource_overrides: resourceOverrides,
 	});
-	const { ceilings: limits, verification_reserve: reserve } = routeBudget(configuration, route, resourceOverrides);
+	const { ceilings: limits, verification_reserve: reserve } = routeBudget(
+		capturedConfiguration,
+		route,
+		resourceOverrides,
+	);
 	const contract = makeRecord(mission, 1, "MissionContract", {
 		command_spec_ref: spec.record_id,
 		product_mode: "padma_code",

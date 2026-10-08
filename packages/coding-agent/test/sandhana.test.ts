@@ -307,11 +307,12 @@ describe("Sandhana governed action path", () => {
 		const f = fixture();
 		f.start("Fix a");
 		const initial = f.kernel.state!;
-		const state = { ...initial, revision: initial.revision + 1, used: { ...initial.used, execution: 33 } };
+		const spent = initial.ceilings.execution - initial.verification_reserve - 1;
+		const state = { ...initial, revision: initial.revision + 1, used: { ...initial.used, execution: spent } };
 		f.store.commit(initial.revision, state, []);
 		const first = makeRecord(state.mission_id, state.revision + 1, "BudgetReservation", {
 			owner_operation_id: "explore-1",
-			amounts: { ...state.used, execution: 1 },
+			amounts: { ...initial.used, execution: 1 },
 			protected_for_verification: false,
 			state: "RESERVED",
 			actual: null,
@@ -333,7 +334,7 @@ describe("Sandhana governed action path", () => {
 				[second],
 			),
 		).toThrow("protected verification");
-		expect(f.store.load(state.mission_id).used.execution).toBe(33);
+		expect(f.store.load(state.mission_id).used.execution).toBe(spent);
 	});
 	it("evidence-backed escalation retains spent calls and changes the active route", async () => {
 		const f = fixture();
@@ -375,7 +376,8 @@ describe("Sandhana governed action path", () => {
 		expect(f.kernel.state!.used).toEqual(before.used);
 		expect(f.kernel.state!.used.execution).toBe(2);
 		expect(JSON.parse(f.kernel.position()).route).toBe("GAMBHIRA");
-		expect(f.kernel.state!.ceilings.execution).toBe(100);
+		expect(f.kernel.state!.ceilings).toEqual(before.ceilings);
+		expect(f.kernel.state!.verification_reserve).toBe(before.verification_reserve);
 	});
 	it("policy-version changes immediately before dispatch stop the action", async () => {
 		let change = () => {};

@@ -148,6 +148,13 @@ export function createAvartanaTools(kernel: SandhanaKernel): AgentTool[] {
 				beginByte: Type.Optional(Type.Integer({ minimum: 0, maximum: 8 * 1024 * 1024 })),
 				endByte: Type.Optional(Type.Integer({ minimum: 0, maximum: 8 * 1024 * 1024 })),
 				purpose: Type.Optional(Type.String({ maxLength: 1000 })),
+				freshness: Type.Optional(
+					Type.Union([
+						Type.Literal("historical_allowed"),
+						Type.Literal("current_generation"),
+						Type.Literal("live"),
+					]),
+				),
 			},
 			{ additionalProperties: false },
 		),
@@ -160,6 +167,7 @@ export function createAvartanaTools(kernel: SandhanaKernel): AgentTool[] {
 				beginByte?: number;
 				endByte?: number;
 				purpose?: string;
+				freshness?: ContextRequest["freshness"];
 			};
 			const base = baseRequest(kernel);
 			const range =
@@ -177,7 +185,11 @@ export function createAvartanaTools(kernel: SandhanaKernel): AgentTool[] {
 				id: randomUUID(),
 				question: args.purpose ?? `Exact read of ${args.locator}`,
 				sources: [{ family: args.family, locator: args.locator, ...(range ? { range } : {}) }],
-				freshness: "current_generation",
+				freshness:
+					args.freshness ??
+					(["tool_artifact", "mission_evidence", "git_object", "git_worktree_diff"].includes(args.family)
+						? "historical_allowed"
+						: "current_generation"),
 				coverageMode: "targeted",
 				limits: { ...DEFAULT_CONTEXT_LIMITS },
 				cancellationId: String(id),
@@ -240,7 +252,7 @@ export function createAvartanaTools(kernel: SandhanaKernel): AgentTool[] {
 							: {}),
 					},
 				],
-				freshness: "current_generation",
+				freshness: args.family === "tool_artifact" ? "historical_allowed" : "current_generation",
 				coverageMode: "targeted",
 				limits: { ...DEFAULT_CONTEXT_LIMITS },
 				cancellationId: String(id),

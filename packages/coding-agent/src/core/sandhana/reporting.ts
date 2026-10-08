@@ -1,5 +1,5 @@
 import { redact } from "./code.ts";
-import type { RecordOf } from "./records.ts";
+import type { RecordOf, TerminalStatus } from "./records.ts";
 
 /** Crop before redaction/allocation, then stop at a complete UTF-8 character. */
 export function boundedText(text: string, maxBytes: number): { text: string; omitted: boolean } {
@@ -12,6 +12,65 @@ export function boundedText(text: string, maxBytes: number): { text: string; omi
 }
 
 type TerminalView = Omit<RecordOf<"TerminalReport">, "record_id" | "record_type" | "revision" | "schema_version">;
+
+const STATUS_TEXT: Record<TerminalStatus, string> = {
+	VERIFIED_COMPLETE: "Completed and verified.",
+	DELIVERED_UNVERIFIED: "Delivered; review is still required.",
+	PARTIALLY_COMPLETE: "Some work remains unverified.",
+	BLOCKED: "I need more information or permission to continue.",
+	BUDGET_EXHAUSTED: "Stopped because the configured task limit was reached.",
+	EXECUTION_FAILED: "The task could not be completed.",
+	UNSAFE_OR_UNAUTHORIZED: "The requested action needs permission before it can run.",
+	OUTCOME_UNKNOWN:
+		"I could not confirm whether the command completed.\nCheck the command's output and target state before running it again.",
+};
+
+const OPERATION_STATUS_TEXT = new Map([
+	["QUEUED", "Waiting to run."],
+	["DISPATCHED", "Starting."],
+	["RUNNING", "Running."],
+	["COMPLETED", "Command completed."],
+	["FAILED", "Command failed."],
+	["CANCELLED", "Cancelled."],
+	["CANCEL_REQUESTED", "Cancellation requested; completion is still being checked."],
+	["UNCERTAIN", STATUS_TEXT.OUTCOME_UNKNOWN],
+]);
+
+export function userFacingOperationStatus(status: string): string | undefined {
+	return OPERATION_STATUS_TEXT.get(status);
+}
+
+/** Controlled engine explanations; file and command output are never rewritten by this projection. */
+export function userFacingReason(reason: string): string {
+	if (
+		reason ===
+		"Behavioral coverage was assessed from cited source and executed named cases; broader behavior was not verified"
+	)
+		return "";
+	return reason
+		.replace(
+			"Supply exact authorized action or current requirement-specific acceptance check",
+			"Provide a specific command or a check for the remaining work.",
+		)
+		.replace(
+			"Semantic or subjective acceptance requires explicit current proof/review; no success claim from prose",
+			"The requested result still needs a relevant check or review.",
+		)
+		.replace("Cognitive tick settlement failed", "Saving task progress failed")
+		.replace(
+			"Configured stagnation limit reached: no evidence-backed new approach",
+			"Recent steps did not resolve the remaining checks.",
+		)
+		.replace("Failure recording failed", "Saving error details failed")
+		.replace(/\s*\[evidence [^\]\r\n]+\]/g, "")
+		.replace(/\b(?:Operation|Unknown operation:) [0-9a-f-]{36}[^\r\n]*/gi, "")
+		.trim();
+}
+
+export function userFacingStop(status: TerminalStatus, reason?: string): string {
+	const detail = reason ? userFacingReason(reason) : "";
+	return [STATUS_TEXT[status], detail].filter(Boolean).join("\n");
+}
 
 /** Verification records remain private; show only the checked operation, target and verdict. */
 function checkText(check: string): string {
@@ -32,7 +91,8 @@ function checkText(check: string): string {
 	}
 	return "Check details retained in the execution history";
 }
-export function renderTerminal(report: TerminalView, maxBytes: number): { text: string; omitted: boolean } {
+/** Detailed audit projection; ordinary delivery uses the separately admitted compact rendering. */
+export function renderTerminalDetails(report: TerminalView, maxBytes: number): { text: string; omitted: boolean } {
 	const marker = "[Report view truncated; inspect persisted report]";
 	const render = (allowance: number): { text: string; omitted: boolean } => {
 		const parts: string[] = [];
@@ -83,39 +143,39 @@ export function renderTerminal(report: TerminalView, maxBytes: number): { text: 
 	return { text: prefix.text ? `${prefix.text}\n${marker}` : "", omitted: true };
 }
 
+/**
+ * One ordinary delivery projection for admission, store validation, chat and replay.
+ * Essential status/reconciliation text must fit before optional presentation.
+ * Detailed verification stays accessible in the persisted report.
+ */
+export function renderTerminal(report: TerminalView, maxBytes: number): { text: string; omitted: boolean } {
+	if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error("Invalid output byte allowance");
+	const control: string[] = [STATUS_TEXT[report.status]];
+	if (report.next_action && report.status !== "OUTCOME_UNKNOWN") control.push(userFacingReason(report.next_action));
+	if (boundedText(control.join("\n"), maxBytes).omitted) return { text: "", omitted: true };
+	const limitations: string[] = [];
+	for (const limitation of report.limitations) {
+		if (limitation && !limitation.includes("sandhana://") && !limitation.includes("[evidence ")) {
+			const reason = userFacingReason(limitation);
+			if (reason) limitations.push(reason);
+		}
+	}
+	const presentation = report.presentation?.trim() ? [report.presentation] : [];
+	// Redact before measuring, exactly like the persisted rendering.
+	const full = [...presentation, ...control, ...limitations].join("\n");
+	const marker = "[Output shortened; full details are saved in task history]";
+	const rendered = boundedText(full, maxBytes);
+	if (!rendered.omitted) return rendered;
+	const prefixLimit = Math.max(0, maxBytes - Buffer.byteLength(marker) - 1);
+	if (boundedText(control.join("\n"), prefixLimit).omitted) return { text: "", omitted: true };
+	const prefix = boundedText([...control, ...limitations, ...presentation].join("\n"), prefixLimit);
+	return { text: prefix.text ? `${prefix.text}\n${marker}` : "", omitted: true };
+}
+
 export function terminalText(report: RecordOf<"TerminalReport">): string {
 	return renderTerminal(report, report.output_limit_bytes ?? Number.MAX_SAFE_INTEGER).text;
 }
 
-/**
- * Chat delivery projection: behavior or exact blocker first, then the terminal
- * status word. Ledger internals (verified/remaining counts, per-check detail,
- * artifact/evidence references) stay in the persisted report only; the chat
- * message must read as an outcome, not a database dump.
- * Respects the persisted output budget: when no bytes remain, returns "".
- */
 export function userTerminalText(report: RecordOf<"TerminalReport">): string {
-	const allowance = report.output_limit_bytes ?? Number.MAX_SAFE_INTEGER;
-	if (!Number.isSafeInteger(allowance) || allowance <= 0) return "";
-	const lines: string[] = [];
-	if (report.presentation?.trim()) {
-		lines.push(report.presentation.trim());
-	}
-	for (const limitation of report.limitations) {
-		if (limitation && !limitation.includes("sandhana://") && !limitation.includes("[evidence ")) {
-			lines.push(limitation);
-		}
-	}
-	if (report.unknown_operation) {
-		lines.push(`Unknown operation: ${report.unknown_operation}`);
-	}
-	if (report.next_action) lines.push(report.next_action);
-	lines.push(report.status);
-	// Redact before measuring, exactly like the persisted rendering.
-	const full = lines.join("\n");
-	const marker = "[Report view truncated; inspect persisted report]";
-	const rendered = boundedText(full, allowance);
-	if (!rendered.omitted) return rendered.text;
-	const prefix = boundedText(full, Math.max(0, allowance - Buffer.byteLength(marker) - 1));
-	return prefix.text ? `${prefix.text}\n${marker}` : "";
+	return terminalText(report);
 }

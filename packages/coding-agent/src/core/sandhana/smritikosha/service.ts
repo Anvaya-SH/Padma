@@ -168,6 +168,12 @@ export class SmritikoshaService {
 	extractCandidates(mission: MissionState, store: MissionStore): CandidateInput[] {
 		const candidates: CandidateInput[] = [];
 		const spec = store.get(mission.mission_id, mission.command, "CommandSpecification");
+		if (
+			/\b(?:do not|don't|never)\b[^.!?\n]{0,160}\b(?:store|create|save|retain)\s+(?:any\s+)?(?:other\s+)?memor(?:y|ies)\b/i.test(
+				spec.original_instruction,
+			)
+		)
+			return candidates;
 		const explicit = [...spec.prohibitions, ...spec.preferences].filter((text) => text.trim().length > 0).slice(0, 3);
 		for (const text of explicit) {
 			candidates.push({

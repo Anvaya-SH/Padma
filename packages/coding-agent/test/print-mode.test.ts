@@ -1,5 +1,6 @@
 import type { AssistantMessage, ImageContent } from "@anvaya.sh/padma-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as outputGuard from "../src/core/output-guard.ts";
 import type { SessionShutdownEvent } from "../src/index.ts";
 import { runPrintMode } from "../src/modes/print-mode.ts";
 
@@ -91,6 +92,17 @@ afterEach(() => {
 });
 
 describe("runPrintMode", () => {
+	it("prints the useful answer without exposing control proposals or changing the provider transcript", async () => {
+		const text = '<pramana>{"results":[]}</pramana>\nFour tests passed.';
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text }));
+		const output = vi.spyOn(outputGuard, "writeRawStdout").mockImplementation(() => true);
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+		});
+		expect(exitCode).toBe(0);
+		expect(output).toHaveBeenCalledExactlyOnceWith("Four tests passed.\n");
+		expect(runtimeHost.session.state.messages[0].content).toEqual([{ type: "text", text }]);
+	});
 	it("emits session_shutdown in text mode", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
 		const { session } = runtimeHost;

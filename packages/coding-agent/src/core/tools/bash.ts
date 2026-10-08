@@ -64,6 +64,9 @@ const bashOutputSchema = Type.Object({
 	exit_code: Type.Number(),
 	wall_time_seconds: Type.Number(),
 	output_complete: Type.Optional(Type.Boolean({ description: "Whether native stdout and stderr reached EOF" })),
+	stdout: Type.Optional(Type.String({ description: "Captured stdout when the adapter identifies streams" })),
+	stderr: Type.Optional(Type.String({ description: "Captured stderr when the adapter identifies streams" })),
+	streams_truncated: Type.Optional(Type.Boolean({ description: "Whether separate stream views omit observed bytes" })),
 });
 
 export type BashToolOutput = Static<typeof bashOutputSchema>;
@@ -96,7 +99,7 @@ export interface BashOperations {
 		command: string,
 		cwd: string,
 		options: {
-			onData: (data: Buffer) => void;
+			onData: (data: Buffer, stream?: "stdout" | "stderr") => void;
 			signal?: AbortSignal;
 			timeout?: number;
 			env?: NodeJS.ProcessEnv;
@@ -178,8 +181,8 @@ export function createLocalShellOperations(shellName: string, resolveShellConfig
 					}, timeoutMs);
 				}
 				// Stream stdout and stderr.
-				child.stdout?.on("data", onData);
-				child.stderr?.on("data", onData);
+				child.stdout?.on("data", (data: Buffer) => onData(data, "stdout"));
+				child.stderr?.on("data", (data: Buffer) => onData(data, "stderr"));
 				// Handle abort signal by killing the entire process tree.
 				if (signal) {
 					if (signal.aborted) onAbort();
@@ -347,6 +350,11 @@ export function createShellToolDefinition(
 			let acceptingOutput = true;
 			let completionLimitation: string | undefined;
 			let outputComplete: boolean | undefined;
+			const streams: Record<"stdout" | "stderr", Buffer[]> = { stdout: [], stderr: [] };
+			let streamBytes = 0;
+			let streamsKnown = true;
+			let streamsTruncated = false;
+			const streamLimit = Math.min(STRUCTURED_OUTPUT_MAX_BYTES, outputLimit ?? STRUCTURED_OUTPUT_MAX_BYTES);
 			let updateTimer: NodeJS.Timeout | undefined;
 			let updateDirty = false;
 			let lastUpdateAt = 0;
@@ -391,8 +399,15 @@ export function createShellToolDefinition(
 				onUpdate({ content: [], details: undefined });
 			}
 
-			const handleData = (data: Buffer) => {
+			const handleData = (data: Buffer, stream?: "stdout" | "stderr") => {
 				if (!acceptingOutput) return;
+				if (stream === undefined) streamsKnown = false;
+				else {
+					const retained = data.subarray(0, Math.max(0, streamLimit - streamBytes));
+					if (retained.length) streams[stream].push(Buffer.from(retained));
+					streamBytes += retained.length;
+					streamsTruncated ||= retained.length < data.length;
+				}
 				output.append(data);
 				if (output.outputLimitExceeded) outputAbort.abort();
 				scheduleOutputUpdate();
@@ -487,6 +502,13 @@ export function createShellToolDefinition(
 				const structuredContent: BashToolOutput = {
 					output: fullOutput.content,
 					truncated: fullOutput.truncated,
+					...(streamsKnown
+						? {
+								stdout: Buffer.concat(streams.stdout).toString(),
+								stderr: Buffer.concat(streams.stderr).toString(),
+								streams_truncated: streamsTruncated,
+							}
+						: {}),
 					...(fullOutput.truncated && snapshot.fullOutputPath
 						? { full_output_path: snapshot.fullOutputPath }
 						: {}),

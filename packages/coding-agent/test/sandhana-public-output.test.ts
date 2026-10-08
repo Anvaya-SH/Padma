@@ -1,10 +1,82 @@
+import { fauxAssistantMessage } from "@anvaya.sh/padma-ai";
 import { describe, expect, it } from "vitest";
+import { SandhanaError } from "../src/core/sandhana/errors.ts";
 import { SandhanaKernel } from "../src/core/sandhana/kernel.ts";
-import { publicOutput } from "../src/core/sandhana/public-output.ts";
+import { publicAgentEvent, publicOutput } from "../src/core/sandhana/public-output.ts";
 import { MissionStore } from "../src/core/sandhana/store.ts";
 import { toJsonEvent } from "../src/modes/json-event.ts";
 
 describe("ordinary public output privacy", () => {
+	it("projects operation control stops without requiring optional failure details", () => {
+		const event = {
+			type: "tool_execution_end" as const,
+			toolCallId: "operation-control",
+			toolName: "sandhana_operation",
+			result: {
+				content: [
+					{ type: "text" as const, text: "Operation a1cba27c-d364-4086-82d0-348fc4c66e63 may have taken effect" },
+				],
+				details: { sandhana_stop: "OUTCOME_UNKNOWN" },
+			},
+			isError: true,
+		};
+		const projected = publicAgentEvent(event);
+		if (projected?.type !== "tool_execution_end") throw new Error("Missing operation event");
+		expect(JSON.stringify(projected.result.content)).toContain("could not confirm");
+		expect(JSON.stringify(projected.result.content)).not.toContain("a1cba27c");
+		expect(projected.result.details).toEqual(event.result.details);
+	});
+	it("keeps machine proposals in the raw response while excluding them from displayed assistant text", () => {
+		const message = fauxAssistantMessage('Useful result. <yukti>{"private":"control-proposal"}</yukti>');
+		const projected = publicAgentEvent({ type: "message_end", message });
+		expect(JSON.stringify(projected)).toContain("Useful result.");
+		expect(JSON.stringify(projected)).not.toContain("control-proposal");
+		expect(JSON.stringify(message)).toContain("control-proposal");
+	});
+	it.each(["yukti", "pramana_plan", "pramana"])(
+		"hides an interrupted %s proposal while preserving the preceding answer and raw response",
+		(tag) => {
+			const message = fauxAssistantMessage(`Useful result. <${tag}>{"private":"unfinished-control`);
+			const projected = publicAgentEvent({ type: "message_end", message });
+			expect(projected).toMatchObject({ message: { content: [{ type: "text", text: "Useful result." }] } });
+			expect(JSON.stringify(projected)).not.toContain("unfinished-control");
+			expect(JSON.stringify(message)).toContain("unfinished-control");
+		},
+	);
+	it("shows a plain uncertain tool outcome and preserves typed diagnostic details", () => {
+		const operation = "a1cba27c-d364-4086-82d0-348fc4c66e63";
+		const error = new SandhanaError("EFFECT_OUTCOME_UNKNOWN", `Operation ${operation} may have taken effect`, {
+			operation_id: operation,
+		});
+		const event = {
+			type: "tool_execution_end" as const,
+			toolCallId: "actual-call",
+			toolName: "bash",
+			result: {
+				content: [{ type: "text" as const, text: error.message }],
+				details: { sandhana_stop: "OUTCOME_UNKNOWN", sandhana_failure: error.failure },
+			},
+			isError: true,
+		};
+		const projected = publicAgentEvent(event);
+		if (projected?.type !== "tool_execution_end") throw new Error("Missing tool event");
+		const text = JSON.stringify(projected.result.content);
+		expect(text).toContain("could not confirm");
+		expect(text).not.toContain(operation);
+		expect(projected.result.details).toEqual(event.result.details);
+		expect(event.result.content[0].text).toContain(operation);
+	});
+	it("redacts generic credential tokens and proxy/cookie text in public views", () => {
+		const projected = publicOutput({
+			token: "opaque-token",
+			message: 'token="opaque-inline" proxy_authorization=opaque-proxy cookie=opaque-cookie',
+			count: 12,
+		});
+		const wire = JSON.stringify(projected);
+		for (const secret of ["opaque-token", "opaque-inline", "opaque-proxy", "opaque-cookie"])
+			expect(wire).not.toContain(secret);
+		expect(projected).toMatchObject({ token: "[REDACTED]", count: 12 });
+	});
 	it("charges delivered views and fences new work when a public payload cannot fit", () => {
 		const store = new MissionStore(":memory:");
 		try {

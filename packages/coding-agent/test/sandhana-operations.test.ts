@@ -468,16 +468,27 @@ describe("Durable subordinate operations", () => {
 		);
 		expect(requirements.at(-1)!.status).toBe("UNMET");
 	});
-	it("background admission cannot consume protected verification capacity", async () => {
-		const f = fixture({ limits: { execution: 7 } });
-		const one = await f.manager.prepare("read", { path: "a.png" });
-		await expect(f.manager.prepare("read", { path: "b.png" })).rejects.toThrow();
-		await f.manager.pump();
-		await until(() => !f.manager.hasPending());
-		expect(f.manager.inspect(one.operation_id).effect.status).toBe("CONFIRMED_COMPLETE");
-		expect(f.kernel.state!.used.execution).toBe(1);
-		expect(f.kernel.state!.verification_reserve).toBe(6);
-	});
+	it.each([
+		{ profile: "STANDARD/1", reserve: 3 },
+		{ profile: "LEGACY/1", reserve: 6 },
+	] as const)(
+		"background admission cannot consume protected verification capacity ($profile)",
+		async ({ profile, reserve }) => {
+			const f = fixture({
+				limits: { execution: reserve + 1 },
+				configuration: { version: "sandhana/1", calibration_profile: profile },
+			});
+			expect(f.kernel.state!.verification_reserve).toBe(reserve);
+			const one = await f.manager.prepare("read", { path: "a.png" });
+			await expect(f.manager.prepare("read", { path: "b.png" })).rejects.toThrow();
+			expect(f.manager.list()).toHaveLength(1);
+			await f.manager.pump();
+			await until(() => !f.manager.hasPending());
+			expect(f.manager.inspect(one.operation_id).effect.status).toBe("CONFIRMED_COMPLETE");
+			expect(f.kernel.state!.used.execution).toBe(1);
+			expect(f.entered).toEqual(["a.png"]);
+		},
+	);
 	it("progress is durable, bounded, associated and independently metered", async () => {
 		const gate = deferred();
 		const f = fixture({ gates: new Map([["a.png", gate]]) });

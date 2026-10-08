@@ -12,6 +12,7 @@ import {
 	type TuiMouseEvent,
 } from "@anvaya.sh/padma-tui";
 import type { ToolDefinition, ToolRenderContext, ToolRenderResultOptions } from "../../../core/extensions/types.ts";
+import { userFacingOperationStatus, userFacingReason } from "../../../core/sandhana/reporting.ts";
 import type { Theme } from "../theme/theme.ts";
 
 /**
@@ -38,6 +39,30 @@ import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
+
+const KNOWLEDGE_TITLES = new Map([
+	["avartana", "Retrieve context"],
+	["avartana_search", "Search context"],
+	["avartana_read", "Read context"],
+	["avartana_expand", "Expand context"],
+	["avartana_analyze", "Analyze context"],
+	["avartana_sources", "Available sources"],
+	["avartana_context_status", "Context status"],
+	["sarasangraha_compact", "Save context"],
+	["sarasangraha_restore", "Restore context"],
+	["sarasangraha_pin", "Pin context"],
+	["sarasangraha_unpin", "Unpin context"],
+	["sarasangraha_status", "Saved context status"],
+	["sarasangraha_explain", "Context details"],
+	["smritikosha_recall", "Recall memory"],
+	["smritikosha_inspect", "Inspect memory"],
+	["smritikosha_consider", "Consider memory"],
+	["smritikosha_store", "Save memory"],
+	["smritikosha_correct", "Correct memory"],
+	["smritikosha_demote", "Update memory status"],
+	["smritikosha_forget", "Forget memory"],
+	["smritikosha_status", "Memory status"],
+]);
 
 /** Scheduler control envelopes are model/kernel state, never user chat text. */
 function isControlEnvelope(text: string): boolean {
@@ -168,7 +193,9 @@ export class ToolExecutionComponent extends Container {
 		return new Text(
 			this.toolName === "sandhana_operation"
 				? this.formatOperationCall()
-				: formatToolCallWithArgs(this.toolName, this.args, theme, this.expanded),
+				: KNOWLEDGE_TITLES.has(this.toolName) && !this.expanded
+					? theme.fg("toolTitle", theme.bold(KNOWLEDGE_TITLES.get(this.toolName)!))
+					: formatToolCallWithArgs(this.toolName, this.args, theme, this.expanded),
 			0,
 			0,
 		);
@@ -434,6 +461,22 @@ export class ToolExecutionComponent extends Container {
 
 	private getTextOutput(): string {
 		const output = getRenderedTextOutput(this.result, this.showImages);
+		if (KNOWLEDGE_TITLES.has(this.toolName) && !this.expanded && output) {
+			try {
+				const value: unknown = JSON.parse(output);
+				if (value && typeof value === "object" && "snippets" in value && Array.isArray(value.snippets)) {
+					const excerpts = value.snippets.flatMap((snippet: unknown) =>
+						snippet && typeof snippet === "object" && "text" in snippet && typeof snippet.text === "string"
+							? [snippet.text]
+							: [],
+					);
+					if (excerpts.length) return excerpts.join("\n");
+				}
+				return this.result?.isError ? "Could not retrieve the requested result." : "Result saved in task history.";
+			} catch {
+				return output;
+			}
+		}
 		if (this.toolName !== "sandhana_operation" || !output) return output;
 		try {
 			const value: unknown = JSON.parse(output);
@@ -445,8 +488,11 @@ export class ToolExecutionComponent extends Container {
 				const schedule = fields.schedule ?? fields;
 				if (schedule && typeof schedule === "object" && !Array.isArray(schedule)) {
 					const status = schedule as Record<string, unknown>;
-					if (typeof status.status === "string" && typeof status.reason === "string")
-						return `${status.status}: ${status.reason}`;
+					if (typeof status.status === "string" && typeof status.reason === "string") {
+						const text = userFacingOperationStatus(status.status);
+						if (text)
+							return this.expanded ? [text, userFacingReason(status.reason)].filter(Boolean).join("\n") : text;
+					}
 				}
 			}
 			return "Operation details retained in execution history";
@@ -484,11 +530,12 @@ export class ToolExecutionComponent extends Container {
 			}
 			return text;
 		}
-		if (this.toolName === "avartana") {
-			let text = theme.fg("toolTitle", theme.bold("Retrieve context"));
+		if (KNOWLEDGE_TITLES.has(this.toolName)) {
+			let text = theme.fg("toolTitle", theme.bold(KNOWLEDGE_TITLES.get(this.toolName)!));
+			if (this.expanded) text += `\n${JSON.stringify(this.args, null, 2)}`;
 			const output = this.getTextOutput();
 			if (output) {
-				const preview = output.length > 500 ? `${output.slice(0, 497)}...` : output;
+				const preview = !this.expanded && output.length > 500 ? `${output.slice(0, 497)}...` : output;
 				text += `\n${preview}`;
 			}
 			return text;

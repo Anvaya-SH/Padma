@@ -45,7 +45,7 @@ describe("versioned configuration and sourced resource adjustments", () => {
 			{ version: "sandhana/1", model: { response_tokens: null } },
 			{ version: "sandhana/1", view: { tool_chars: Number.MAX_SAFE_INTEGER + 1 } },
 			{ version: "sandhana/1", artifact: { retention_ms: Number.MAX_SAFE_INTEGER } },
-			{ version: "sandhana/1", routes: { MADHYAMA: { execution: 5 } } },
+			{ version: "sandhana/1", routes: { MADHYAMA: { execution: 5, verification_reserve: 6 } } },
 			{ version: "sandhana/1", stagnation: { diagnose: 7, stop: 4 } },
 			{ version: "sandhana/1", timeouts: { shell_ms: Infinity } },
 		])
@@ -145,6 +145,8 @@ describe("versioned configuration and sourced resource adjustments", () => {
 		expect(artifact.record_type).toBe("Artifact");
 		expect(f.store.artifact(artifact.mission_id, artifact.record_id).length).toBeGreaterThan(0);
 		expect(f.kernel.ready()).toBe(true);
+		expect(f.kernel.position()).toContain("Reuse the retained tool result when present");
+		expect(f.kernel.position()).not.toContain("Artifact unavailable or expired");
 		clock.mockReturnValue(now + 101);
 		expect(() => f.store.artifact(artifact.mission_id, artifact.record_id)).toThrow("Artifact expired");
 		expect(f.kernel.position()).toContain("Artifact unavailable or expired; digest is not proof");

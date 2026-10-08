@@ -1,4 +1,5 @@
 import type { AgentMessage, AgentTool } from "@anvaya.sh/padma-agent-core";
+import { getCurrentSystemMessage } from "@anvaya.sh/padma-ai";
 import { canonical, digest, type MissionState, type RecordOf } from "../records.ts";
 import type { MissionStore } from "../store.ts";
 import { type AuthorityRef, ContextError, type DerivedRef, type EvidenceRef } from "./contracts.ts";
@@ -203,11 +204,16 @@ export function assemblePacket(
 	const capacity = window - output - overhead;
 	if (!Number.isSafeInteger(capacity) || capacity <= 0)
 		throw new ContextError("CAPACITY", "No supported input capacity after completion and instruction reserve");
-	const trusted = messages.filter(
+	const systemMessages = messages.filter(
 		(message) =>
 			message.role === "system" &&
 			!(typeof message.content === "string" && message.content.startsWith('{"controller":"sandhana"')),
 	);
+	// Replay tool and section deltas using the native transcript semantics. Full
+	// declarations remain in durable history; a compact decision needs their
+	// current state, not every previously replaced schema.
+	const currentSystem = compact ? getCurrentSystemMessage(systemMessages) : undefined;
+	const trusted = compact ? (currentSystem ? [currentSystem] : []) : systemMessages;
 	const authority: AgentMessage = {
 		role: "system",
 		content: authorityText ?? JSON.stringify(modelSafe({ controller: "sandhana", position })),
@@ -225,19 +231,30 @@ export function assemblePacket(
 	};
 	const protectedMessages = [...trusted, authority, immediate];
 	const size = (items: AgentMessage[]) => Buffer.byteLength(JSON.stringify(items)) + schemaBytes;
+	if (size(protectedMessages) > capacity && !compact)
+		return assemblePacket(position, messages, tools, window, output, overhead, true, authorityText);
 	if (size(protectedMessages) > capacity)
 		throw new ContextError(
 			"CAPACITY",
-			"Mandatory requirements, authority and unresolved lifecycle do not fit; narrow the decision, not the authority",
+			`Mandatory requirements, authority and unresolved lifecycle do not fit (${size(protectedMessages)} input bytes, ${capacity} available, ${schemaBytes} schema bytes); narrow the decision, not the authority`,
 		);
 	let selected = compact
 		? protectedMessages
 		: [...trusted, authority, ...data, ...(data.includes(immediate) ? [] : [immediate])];
 	if (compact) {
-		// Keep complete assistant/tool batches only. The retained history remains in session/store.
-		const boundary = data.findLastIndex((message) => message.role === "assistant");
-		const recent = boundary >= 0 && data.indexOf(immediate) < boundary ? data.slice(boundary) : [];
-		if (size([...selected, ...recent]) <= capacity) selected = [...selected, ...recent];
+		// Keep as many complete recent batches as fit. Retaining just the newest
+		// read makes a two-source decision repeatedly lose its other source.
+		const userBoundary = data.indexOf(immediate);
+		let end = data.length;
+		let recent: AgentMessage[] = [];
+		for (let index = data.length - 1; index > userBoundary; index--) {
+			if (data[index].role !== "assistant") continue;
+			const batch = data.slice(index, end);
+			if (size([...selected, ...batch, ...recent]) > capacity) break;
+			recent = [...batch, ...recent];
+			end = index;
+		}
+		selected = [...selected, ...recent];
 	}
 	if (size(selected) > capacity)
 		return assemblePacket(position, messages, tools, window, output, overhead, true, authorityText);

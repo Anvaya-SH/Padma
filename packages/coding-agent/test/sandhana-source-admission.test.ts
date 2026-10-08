@@ -259,14 +259,21 @@ describe("source authorization and artifact admission", () => {
 		mkdirSync(join(f.cwd, ".padma"));
 		const privatePath = join(f.cwd, ".padma", "private.txt");
 		writeFileSync(privatePath, "private bytes must stay out of observations");
+		const native = createBashTool(f.cwd, {
+			operations: {
+				exec: async (_command, _cwd, { onData }) => {
+					onData(Buffer.from("safe returned tail"));
+					return { exitCode: 0, outputComplete: true };
+				},
+			},
+		});
 		f.kernel.register(
 			{
-				...createBashTool(f.cwd),
-				execute: async () => ({
-					content: [{ type: "text", text: "safe returned tail" }],
-					details: { fullOutputPath: privatePath },
-					structuredContent: { exit_code: 0 },
-				}),
+				...native,
+				execute: async (id, args, signal, onUpdate) => {
+					const result = await native.execute(id, args as BashToolInput, signal, onUpdate);
+					return { ...result, details: { fullOutputPath: privatePath } };
+				},
 			},
 			"bash",
 		);

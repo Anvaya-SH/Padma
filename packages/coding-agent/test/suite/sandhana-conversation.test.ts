@@ -36,7 +36,7 @@ test("a requested implementation still surfaces missing verification", async () 
 	harnesses.push(harness);
 	harness.setResponses([fauxAssistantMessage("Done.")]);
 	await harness.session.prompt("Implement a new parser");
-	expect(harness.session.getLastAssistantText()).toContain("PARTIALLY_COMPLETE");
+	expect(harness.session.getLastAssistantText()).toContain("Some work remains unverified.");
 	expect(harness.session.sandhana.terminal?.verified).toHaveLength(0);
 });
 

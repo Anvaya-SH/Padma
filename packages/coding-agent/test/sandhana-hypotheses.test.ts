@@ -515,13 +515,15 @@ describe("controlled hypothesis identity and actual experimental evidence", () =
 		path = join(f.cwd, "parser.txt");
 		writeFileSync(path, "before");
 		f.kernel.register(
-			{
-				...createBashTool(f.cwd),
-				execute: async () => {
-					invoked = true;
-					return { content: [{ type: "text", text: "supported" }], details: {} };
+			createBashTool(f.cwd, {
+				operations: {
+					exec: async (_command, _cwd, { onData }) => {
+						invoked = true;
+						onData(Buffer.from("supported"));
+						return { exitCode: 0, outputComplete: true };
+					},
 				},
-			},
+			}),
 			"bash",
 		);
 		expect(f.kernel.proposeHypothesis({ ...proposal, target: "parser.txt" })).toBe(true);
@@ -548,13 +550,15 @@ describe("controlled hypothesis identity and actual experimental evidence", () =
 		const path = join(f.cwd, "parser.txt");
 		writeFileSync(path, "before");
 		f.kernel.register(
-			{
-				...createBashTool(f.cwd),
-				execute: async () => {
-					writeFileSync(path, "external postimage");
-					return { content: [{ type: "text", text: "supported" }], details: {} };
+			createBashTool(f.cwd, {
+				operations: {
+					exec: async (_command, _cwd, { onData }) => {
+						writeFileSync(path, "external postimage");
+						onData(Buffer.from("supported"));
+						return { exitCode: 0, outputComplete: true };
+					},
 				},
-			},
+			}),
 			"bash",
 		);
 		expect(f.kernel.proposeHypothesis({ ...proposal, target: "parser.txt" })).toBe(true);
@@ -596,14 +600,17 @@ describe("controlled hypothesis identity and actual experimental evidence", () =
 			});
 			writeFileSync(join(f.cwd, "parser.txt"), "before");
 			f.kernel.register(
-				{
-					...createBashTool(f.cwd),
-					execute: async () => {
-						if (outcome === "revoked unknown") f.kernel.revoke();
-						if (outcome !== "omitted") throw new Error("supported but confirmation was lost");
-						return { content: [{ type: "text", text: `supported${"x".repeat(5000)}` }], details: {} };
+				createBashTool(f.cwd, {
+					operations: {
+						exec: async (_command, _cwd, { onData }) => {
+							if (outcome === "revoked unknown") f.kernel.revoke();
+							if (outcome !== "omitted") throw new Error("supported but confirmation was lost");
+							// Complete native output fits; its duplicated structured/diagnostic JSON exceeds retention.
+							onData(Buffer.from(`supported${"x".repeat(3000)}`));
+							return { exitCode: 0, outputComplete: true };
+						},
 					},
-				},
+				}),
 				"bash",
 			);
 			expect(f.kernel.proposeHypothesis({ ...proposal, target: "parser.txt" })).toBe(true);
@@ -792,27 +799,25 @@ describe("controlled hypothesis identity and actual experimental evidence", () =
 				.records(corrected.mission_id)
 				.findLast((record) => record.record_type === "Artifact" && record.purpose === "DELIVERED")!;
 			f.kernel.register(
-				{
-					...createBashTool(f.cwd),
-					execute: async () => {
-						if (outcome === "expiry") clock.mockReturnValue(now + 1001);
-						else {
-							const database = new DatabaseSync(f.store.databasePath);
-							try {
-								database
-									.prepare("DELETE FROM artifacts WHERE mission=? AND id=?")
-									.run(corrected.mission_id, delivered.record_id);
-							} finally {
-								database.close();
+				createBashTool(f.cwd, {
+					operations: {
+						exec: async (_command, _cwd, { onData }) => {
+							if (outcome === "expiry") clock.mockReturnValue(now + 1001);
+							else {
+								const database = new DatabaseSync(f.store.databasePath);
+								try {
+									database
+										.prepare("DELETE FROM artifacts WHERE mission=? AND id=?")
+										.run(corrected.mission_id, delivered.record_id);
+								} finally {
+									database.close();
+								}
 							}
-						}
-						return {
-							content: [{ type: "text", text: "supported" }],
-							details: {},
-							structuredContent: { exit_code: 0 },
-						};
+							onData(Buffer.from("supported"));
+							return { exitCode: 0, outputComplete: true };
+						},
 					},
-				},
+				}),
 				"bash",
 			);
 			await f.kernel.execute("bash", "correction-evidence-expired-after-start", { command: "node diagnostic.cjs" });

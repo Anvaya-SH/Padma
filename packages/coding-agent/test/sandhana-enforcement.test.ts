@@ -482,17 +482,46 @@ describe("Sandhana evidence and recovery enforcement", () => {
 		const current = f.kernel.state!;
 		expect(f.store.get(current.mission_id, current.hypotheses[0], "Hypothesis").attempts).toBe(1);
 	});
-	it("deep-route branches need observations, enforce depth two and attempt only the selected branch", async () => {
+	it("deep-route branches need observations, enforce depth two and attach corrections only to the selected branch", async () => {
 		const f = fixture();
-		writeFileSync(join(f.cwd, "a.txt"), "observed bytes");
-		f.start("Fix this component");
-		await f.kernel.execute("read", "bind", { path: "a.txt" });
+		writeFileSync(join(f.cwd, "a.txt"), "root observation\nchild observation\nleaf observation\n");
+		for (const name of ["first.cjs", "second.cjs"])
+			writeFileSync(join(f.cwd, name), "console.log('refuted'); process.exitCode = 1;");
+		f.start(
+			`padma: ${JSON.stringify({
+				objective: "Fix this component",
+				allow_edits: true,
+				shell_commands: ["node first.cjs", "node second.cjs"],
+				requirements: [{ text: "component behavior", rule: "SEMANTIC", target: "." }],
+			})}`,
+		);
+		for (const [mechanism, command] of [
+			["VALIDATE", "node first.cjs"],
+			["NORMALIZE", "node second.cjs"],
+		] as const) {
+			expect(
+				f.kernel.proposeHypothesis({
+					target: ".",
+					cause: "CONFIGURATION",
+					mechanism,
+					failure_signature: "refuted",
+					expected_result: "supported",
+				}),
+			).toBe(true);
+			await f.kernel.execute("bash", mechanism, { command });
+		}
+		const before = f.kernel.state!;
+		const evidence = before.hypotheses.flatMap(
+			(ref) => f.store.get(before.mission_id, ref, "Hypothesis").contradicting,
+		);
 		const signals = signalsForExact(false);
-		for (const key of ["S", "D"] as const)
-			signals[key] = { severity: 2, provenance: "HISTORY", evidence: [f.kernel.state!.last_event!] };
+		signals.H = { severity: 2, provenance: "HISTORY", evidence };
+		signals.A = { severity: 1, provenance: "HISTORY", evidence };
 		f.kernel.escalate(signals);
+		expect(f.kernel.state!.route).toBe("GAMBHIRA");
+		expect(f.kernel.state!.ceilings).toEqual(before.ceilings);
 		const fields: HypothesisProposal = {
-			target: ".",
+			target: "a.txt",
 			cause: "INPUT_FORMAT",
 			mechanism: "INVESTIGATE",
 			failure_signature: "ALPHA_FAILURE",
@@ -501,28 +530,27 @@ describe("Sandhana evidence and recovery enforcement", () => {
 		expect(f.kernel.proposeHypothesis(fields)).toBe(true);
 		const root = f.kernel.state!.leading_hypothesis!;
 		expect(f.kernel.proposeHypothesis({ ...fields, mechanism: "NORMALIZE", parent_ref: root })).toBe(false);
-		await f.kernel.execute("read", "premise", { path: "a.txt" });
-		expect(f.kernel.proposeHypothesis({ ...fields, mechanism: "NORMALIZE", parent_ref: root })).toBe(false);
-		writeFileSync(join(f.cwd, "a.txt"), "ALPHA_SUCCESS");
-		await f.kernel.execute("read", "decisive-premise", { path: "a.txt" });
+		await f.kernel.execute("read", "premise", { path: "a.txt", offset: 1, limit: 1 });
 		expect(f.kernel.proposeHypothesis({ ...fields, mechanism: "NORMALIZE", parent_ref: root })).toBe(true);
 		const child = f.kernel.state!.leading_hypothesis!;
-		writeFileSync(join(f.cwd, "a.txt"), "different child evidence");
-		await f.kernel.execute("read", "child-experiment", { path: "a.txt" });
+		expect(f.kernel.proposeHypothesis({ ...fields, mechanism: "TRACE", parent_ref: child })).toBe(false);
+		await f.kernel.execute("read", "child-experiment", { path: "a.txt", offset: 2, limit: 1 });
 		expect(f.kernel.proposeHypothesis({ ...fields, mechanism: "TRACE", parent_ref: child })).toBe(true);
 		const leaf = f.kernel.state!.leading_hypothesis!;
-		writeFileSync(join(f.cwd, "a.txt"), "different leaf evidence");
-		await f.kernel.execute("read", "leaf-experiment", { path: "a.txt" });
+		await f.kernel.execute("read", "leaf-experiment", { path: "a.txt", offset: 3, limit: 1 });
 		expect(f.kernel.proposeHypothesis({ ...fields, mechanism: "ISOLATE", parent_ref: leaf })).toBe(false);
 		const state = f.kernel.state!;
-		const branches = state.hypotheses.map((id) => f.store.get(state.mission_id, id, "Hypothesis"));
+		const branches = state.hypotheses.slice(2).map((id) => f.store.get(state.mission_id, id, "Hypothesis"));
 		expect(branches.map((branch) => branch.depth)).toEqual([0, 1, 2]);
-		expect(branches.map((branch) => branch.attempts)).toEqual([2, 1, 1]);
-		expect(f.kernel.selectHypothesis(state.hypotheses[1])).toBe(true);
-		await f.kernel.execute("read", "selected-experiment", { path: "a.txt" });
+		// A current read is explicitly shared across branches on the same premise;
+		// a consequential correction belongs only to its selected approach.
+		expect(branches.map((branch) => branch.attempts)).toEqual([3, 2, 1]);
+		expect(f.kernel.selectHypothesis(state.hypotheses[3])).toBe(true);
+		await f.kernel.execute("write", "selected-experiment", { path: "a.txt", content: "selected correction" });
 		const current = f.kernel.state!;
-		expect(current.hypotheses.map((id) => f.store.get(current.mission_id, id, "Hypothesis").attempts)).toEqual([
-			2, 2, 1,
-		]);
+		expect(
+			current.hypotheses.slice(2).map((id) => f.store.get(current.mission_id, id, "Hypothesis").attempts),
+		).toEqual([3, 3, 1]);
+		expect(current.used.execution).toBe(6);
 	});
 });

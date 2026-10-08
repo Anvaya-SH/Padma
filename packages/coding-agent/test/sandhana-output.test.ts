@@ -6,6 +6,7 @@ import { SandhanaKernel } from "../src/core/sandhana/kernel.ts";
 import { serializeOutput, toolOutputView } from "../src/core/sandhana/output.ts";
 import { digest } from "../src/core/sandhana/records.ts";
 import { MissionStore } from "../src/core/sandhana/store.ts";
+import type { BashToolInput } from "../src/core/tools/bash.ts";
 import { createBashTool, createReadTool } from "../src/core/tools/index.ts";
 
 const cleanups: (() => void)[] = [];
@@ -102,7 +103,19 @@ describe("bounded raw tool output", () => {
 			details: { actual: true },
 			structuredContent: { exit_code: 0 },
 		};
-		f.kernel.register({ ...createBashTool(f.cwd), execute: async () => result }, "bash");
+		const native = createBashTool(f.cwd, {
+			operations: { exec: async () => ({ exitCode: 0, outputComplete: true }) },
+		});
+		f.kernel.register(
+			{
+				...native,
+				execute: async (id, args, signal, onUpdate) => {
+					await native.execute(id, args as BashToolInput, signal, onUpdate);
+					return result;
+				},
+			},
+			"bash",
+		);
 		f.start();
 		await expect(f.kernel.execute("bash", "escaped-output", { command: "node effect.cjs" })).rejects.toThrow(
 			"Complete output",
@@ -127,10 +140,14 @@ describe("bounded raw tool output", () => {
 		const now = Date.now();
 		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
 		const f = fixture();
+		const native = createBashTool(f.cwd, {
+			operations: { exec: async () => ({ exitCode: 0, outputComplete: true }) },
+		});
 		f.kernel.register(
 			{
-				...createBashTool(f.cwd),
-				execute: async () => {
+				...native,
+				execute: async (id, args, signal, onUpdate) => {
+					await native.execute(id, args as BashToolInput, signal, onUpdate);
 					clock.mockReturnValue(now + 30 * 60 * 1000 + 1);
 					return {
 						content: [{ type: "text", text: "actual response" }],
@@ -181,11 +198,19 @@ describe("bounded raw tool output", () => {
 						},
 					},
 				);
+			const native = createBashTool(f.cwd, {
+				operations: {
+					exec: async () => {
+						writeFileSync(join(f.cwd, "effect.txt"), "performed");
+						return { exitCode: 0, outputComplete: true };
+					},
+				},
+			});
 			f.kernel.register(
 				{
-					...createBashTool(f.cwd),
-					execute: async () => {
-						writeFileSync(join(f.cwd, "effect.txt"), "performed");
+					...native,
+					execute: async (id, args, signal, onUpdate) => {
+						await native.execute(id, args as BashToolInput, signal, onUpdate);
 						return { content: [{ type: "text", text: "actual returned prefix" }], details };
 					},
 				},

@@ -226,6 +226,7 @@ export class SandhanaKernel {
 	private executionQueue: Promise<void> = Promise.resolve();
 	private observations = new Set<string>();
 	private pendingInput: { instruction: string; source: "USER" | "EXTENSION" } | null = null;
+	private publicMissionAdmitted = true;
 	private pendingStop: KernelStop | null = null;
 	private failureEvents = new WeakMap<SandhanaError, string>();
 	private lastRepair: string | null = null;
@@ -245,9 +246,9 @@ export class SandhanaKernel {
 		this.avartana = new Avartana(this);
 		this.sarasangraha = new SarasangrahaService(this);
 		const memoryPath =
-			this.store.databasePath === ":memory:"
+			this.store.logicalDatabasePath === ":memory:"
 				? ":memory:"
-				: join(dirname(this.store.databasePath), "smritikosha.sqlite");
+				: join(dirname(this.store.logicalDatabasePath), "smritikosha.sqlite");
 		this.smritikoshaStore = new SmritikoshaStore(memoryPath);
 		this.smritikosha = new SmritikoshaService(this.smritikoshaStore);
 		this.missionId = this.store.list(options.session()).at(-1)?.mission_id ?? null;
@@ -371,6 +372,7 @@ export class SandhanaKernel {
 	/** Called before input transforms. Only genuine client input can establish mission authority. */
 	captureInput(instruction: string, source: "USER" | "EXTENSION"): void {
 		this.pendingInput = { instruction, source };
+		this.publicMissionAdmitted = false;
 	}
 	/** Explicit user-selected access mode. Auto scopes authority to the current instruction; full covers the whole workspace. */
 	getAccessMode(): AccessMode {
@@ -456,10 +458,19 @@ export class SandhanaKernel {
 		const input = this.queuedInputs.get(message);
 		if (input) {
 			this.pendingInput = input;
+			this.publicMissionAdmitted = false;
 			this.queuedInputs.delete(message);
 		}
 	}
 	begin(fallback: string): CompiledCommand {
+		// Rejected input and its error presentation do not belong to the
+		// previous open mission. Resume accounting only after admission.
+		this.publicMissionAdmitted = false;
+		const command = this.beginCommand(fallback);
+		this.publicMissionAdmitted = true;
+		return command;
+	}
+	private beginCommand(fallback: string): CompiledCommand {
 		const input = this.pendingInput ?? { instruction: fallback, source: "EXTENSION" as const };
 		this.pendingInput = null;
 		if (input.instruction.startsWith("authorize:")) {
@@ -2305,6 +2316,8 @@ export class SandhanaKernel {
 		const outputReceipts: ShellOutputReceipt[] = [];
 		try {
 			await this.options.beforeDispatch?.();
+			if (!this.adapterCurrent(adapter))
+				throw new KernelStop("BLOCKED", "Registered adapter changed before invocation", "BINDING_STALE");
 			if (newBytes || removeTarget) {
 				await guardedReplace(
 					binding,
@@ -2404,7 +2417,7 @@ export class SandhanaKernel {
 										throw new Error("Native read requested a different bound source");
 									return bytes;
 								},
-								() => adapter.tool.execute(modelCallId, args as never, signal, onUpdate),
+								() => adapter.execute(modelCallId, args as never, signal, onUpdate),
 							);
 						} else {
 							const lines = bytes.toString("utf8").split("\n");
@@ -2447,7 +2460,7 @@ export class SandhanaKernel {
 							start();
 						},
 						() =>
-							adapter.tool.execute(modelCallId, args as never, signal, (partial) => {
+							adapter.execute(modelCallId, args as never, signal, (partial) => {
 								onUpdate?.(this.modelView(partial));
 							}),
 						(receipt) => outputReceipts.push(receipt),
@@ -3009,7 +3022,7 @@ export class SandhanaKernel {
 		if (uncertain)
 			throw new KernelStop(
 				"OUTCOME_UNKNOWN",
-				`Operation ${operation} on ${binding.canonical_path} may have taken effect; reconcile, never blindly retry`,
+				`Effect on ${binding.canonical_path} may have taken effect; reconcile, never blindly retry`,
 				"EFFECT_OUTCOME_UNKNOWN",
 				failureContext,
 			);
@@ -3136,6 +3149,7 @@ export class SandhanaKernel {
 	}
 	/** Admit public session payloads before delivery, independently of retained raw tool output. */
 	publicView(value: unknown): unknown | null {
+		const admitted = this.active && this.publicMissionAdmitted;
 		const lifecycle =
 			typeof value === "object" &&
 			value !== null &&
@@ -3151,11 +3165,11 @@ export class SandhanaKernel {
 			value,
 			lifecycle
 				? this.configuration.artifact.max_bytes
-				: this.active
+				: admitted
 					? this.outputCapacity()
 					: this.configuration.artifact.max_bytes,
 		);
-		if (!this.active) return projected;
+		if (!admitted) return projected;
 		if (lifecycle) return projected;
 		if (this.publicOutputStopped()) return null;
 		const captured = serializeOutput(projected, this.outputCapacity());
@@ -4212,9 +4226,16 @@ export class SandhanaKernel {
 			});
 			state.requirements = state.requirements.map((ref) => (ref === requirementRef ? updated.record_id : ref));
 			if (proof.result !== "PASSED") return;
+			// Later targets must resolve promotions that are still pending in this transition.
+			const checkpoints = new Map(
+				[...new Set([...state.checkpoints, ...state.best])].map((ref) => [
+					ref,
+					this.store.get(state.mission_id, ref, "CheckpointRecord"),
+				]),
+			);
 			for (const target of proof.implementation_targets) {
 				const ref = state.checkpoints.findLast((id) => {
-					const point = this.store.get(state.mission_id, id, "CheckpointRecord");
+					const point = checkpoints.get(id)!;
 					const artifact = this.store.get(state.mission_id, point.artifact_ref, "Artifact");
 					return (
 						point.target === target &&
@@ -4223,18 +4244,16 @@ export class SandhanaKernel {
 					);
 				});
 				if (!ref) continue;
-				const point = this.store.get(state.mission_id, ref, "CheckpointRecord");
+				const point = checkpoints.get(ref)!;
 				const promoted = append("CheckpointRecord", {
 					...point,
 					level: "LOCALLY_VALIDATED",
 					coverage: [...new Set([...point.coverage, requirement.requirement_id])],
 					verification_refs: [...point.verification_refs, verification.record_id],
 				});
+				checkpoints.set(promoted.record_id, promoted);
 				state.checkpoints = state.checkpoints.map((id) => (id === ref ? promoted.record_id : id));
-				state.best = [
-					...state.best.filter((id) => this.store.get(state.mission_id, id, "CheckpointRecord").target !== target),
-					promoted.record_id,
-				];
+				state.best = [...state.best.filter((id) => checkpoints.get(id)!.target !== target), promoted.record_id];
 			}
 		});
 	}
@@ -4661,7 +4680,7 @@ export class SandhanaKernel {
 			}).record_id;
 		});
 	}
-	/** Select current checks before another decision when only protected invocation capacity or no model tick remains. */
+	/** Close current named checks before an optional-work stop; retained output alone is never a passing verdict. */
 	verificationDue(): boolean {
 		if (this.repairReport) return false;
 		const state = this.state!;
@@ -4669,16 +4688,32 @@ export class SandhanaKernel {
 			.map((ref) => this.store.get(state.mission_id, ref, "BudgetReservation"))
 			.filter((reservation) => ["RESERVED", "STARTED", "RETAINED"].includes(reservation.state))
 			.reduce((sum, reservation) => sum + reservation.amounts.execution, 0);
-		return (
+		if (
 			state.ceilings.execution - state.used.execution - outstanding <= state.verification_reserve ||
 			state.used.ticks >= state.ceilings.ticks
+		)
+			return true;
+		if (state.stagnation < this.configuration.stagnation.stop) return false;
+		const requirements = state.requirements
+			.map((ref) => this.store.get(state.mission_id, ref, "Requirement"))
+			.filter(
+				(requirement) =>
+					requirement.mandatory &&
+					requirement.rule === "SEMANTIC" &&
+					requirement.status !== "SUPERSEDED" &&
+					!this.freshRequirement(requirement),
+			);
+		return (
+			behaviorAssessmentSources(this.store, state, requirements).checks.length > 0 ||
+			behaviorPlanningSources(this.store, state, requirements).sources.length > 0
 		);
 	}
 	/** Admit one tool-free question per current retained check/input set, under the original model ledger. */
-	beginCoverageAssessment(): boolean {
+	beginCoverageAssessment(submittedCandidate = false): boolean {
 		const state = this.state!;
+		const verificationDue = this.verificationDue();
 		if (
-			!this.verificationDue() ||
+			(!submittedCandidate && !verificationDue) ||
 			state.used.ticks >= state.ceilings.ticks ||
 			this.operations.hasPending() ||
 			state.phase === "VERIFYING_QUALITY" ||
@@ -4700,8 +4735,31 @@ export class SandhanaKernel {
 			);
 		if (!requirements.length) return false;
 		let inputs = behaviorAssessmentSources(this.store, state, requirements);
-		if (!inputs.checks.length) inputs = behaviorPlanningSources(this.store, state, requirements);
+		if (!inputs.checks.length) {
+			if (!verificationDue) return false;
+			inputs = behaviorPlanningSources(this.store, state, requirements);
+		}
 		if (!inputs.sources.length) return false;
+		const notFreshIds = new Set(requirements.map((requirement) => requirement.requirement_id));
+		// Rejected planning cannot create another planning-only question. Actual
+		// check results still receive the one assessment deduplicated below.
+		const alreadyRejectedCoverage =
+			!inputs.checks.length &&
+			this.store
+				.records(state.mission_id)
+				.some(
+					(record) =>
+						record.record_type === "EvidenceRecord" &&
+						record.stage === "pramana" &&
+						record.kind === "CONTROL" &&
+						record.payload !== null &&
+						typeof record.payload === "object" &&
+						("rejected_coverage" in record.payload || "rejected_check_plan" in record.payload) &&
+						((record.payload as Record<string, unknown>).rejected_coverage === true ||
+							(typeof (record.payload as Record<string, unknown>).rejected_coverage === "string" &&
+								notFreshIds.has((record.payload as Record<string, unknown>).rejected_coverage as string))),
+				);
+		if (alreadyRejectedCoverage) return false;
 		const key = digest({
 			intent_epoch: state.intent_epoch,
 			requirements: state.requirements.map(
@@ -4741,6 +4799,44 @@ export class SandhanaKernel {
 			)
 		)
 			return false;
+		const coverageInputs: { observation_id: string; operation_class: string; target: string; text: string }[] = [];
+		const omittedInputs: string[] = [];
+		let remainingBytes = this.configuration.view.position_chars;
+		for (const ref of inputs.sources) {
+			try {
+				const event = this.store.get(state.mission_id, ref, "EvidenceRecord");
+				const source = this.contextSource(event);
+				if (
+					!source ||
+					this.store.get(state.mission_id, source.ref.artifact.id, "Artifact").bytes > remainingBytes
+				) {
+					omittedInputs.push(ref);
+					continue;
+				}
+				const operation = state.operations
+					.map((id) => this.store.get(state.mission_id, id, "OperationRecord"))
+					.find((operation) => operation.operation_id === event.operation_id);
+				if (!operation) {
+					omittedInputs.push(ref);
+					continue;
+				}
+				const action = this.store.get(state.mission_id, operation.prepared_ref, "PreparedAction");
+				const input = {
+					observation_id: ref,
+					operation_class: action.operation_class,
+					target: this.store.get(state.mission_id, action.binding_ref, "TargetBinding").canonical_path,
+					text: this.contextBytes(source).toString("utf8"),
+				};
+				const bytes = Buffer.byteLength(JSON.stringify(input));
+				if (bytes > remainingBytes) omittedInputs.push(ref);
+				else {
+					remainingBytes -= bytes;
+					coverageInputs.push(input);
+				}
+			} catch {
+				omittedInputs.push(ref);
+			}
+		}
 		this.event(
 			"pramana",
 			"CONTROL",
@@ -4749,6 +4845,7 @@ export class SandhanaKernel {
 				retained_checks: inputs.checks,
 				planning: !inputs.checks.length,
 				tools_disabled: true,
+				coverage_inputs: { provenance: "OBSERVATION", inputs: coverageInputs, omitted: omittedInputs },
 			},
 			null,
 			null,
@@ -5158,16 +5255,27 @@ export class SandhanaKernel {
 		const state = this.state!;
 		const configuration = this.configuration;
 		const spec = this.store.get(state.mission_id, state.command, "CommandSpecification");
+		const position = this.missionPosition();
 		return JSON.stringify({
 			controller: "sandhana",
 			leading_hypothesis: state.leading_hypothesis ?? null,
 			hypotheses: state.hypotheses.map((id) => this.store.get(state.mission_id, id, "Hypothesis")),
 			best_recoverable: state.best,
-			operations: this.operations.list().slice(-16),
+			operations: this.operations
+				.list()
+				.filter(({ effect }) => ["NOT_STARTED", "IN_PROGRESS", "OUTCOME_UNKNOWN"].includes(effect.status)),
 			operation_constraints: state.operation_constraints ?? [],
 			tools: [...this.adapters].filter(([, adapter]) => adapter.kind !== null).map(([name]) => name),
 			objective: spec.objective,
-			mission_position: this.missionPosition(),
+			mission_position: {
+				...position,
+				// Settled effects remain in durable history and evidence_index. Only
+				// unresolved operations need their complete lifecycle in the next decision.
+				operations: position.operations.filter(({ reconciliationRequired }) => reconciliationRequired),
+				schedules: position.schedules.filter(
+					({ status }) => !["COMPLETED", "FAILED", "CANCELLED"].includes(status),
+				),
+			},
 			live_policy: {
 				version: this.policy.version,
 				matches_contract:
@@ -5194,7 +5302,71 @@ export class SandhanaKernel {
 				.map((req) => ({ id: req.requirement_id, text: req.text, rule: req.rule, target: req.target })),
 			semantic_acceptance:
 				"Before the first behavioral check, use <pramana_plan> with the same results schema as <pramana> to bind exact named cases to current full source reads and a recoverable changed implementation. A valid plan admits only its bounded check to protected verification capacity and establishes no verdict. After execution, <pramana> must cite actual results. " +
-				"For an unresolved behavioral coverage question, reuse the native decision: include <pramana>{results:[{requirement_id,command,case_names,applicability:SUPPORTED|INCONCLUSIVE,explanation,citations:[{observation_id,quote,role:IMPLEMENTATION|TEST_ASSERTION,case_name?}]}]}</pramana>. Explain how current test assertions cover each original obligation. Cite full current source reads using evidence_index IDs. Each test citation quotes one complete named case and its assertion using the imported implementation. Implementation must be a current recoverable changed candidate directly imported by that test. Initial rule supports flat named Node tests (node --test file.test.cjs) and specific Vitest files with --run --reporter=json and optional --no-file-parallelism. Named cases must be unique and actually executed; ambiguous nested or indirect assertion coverage remains inconclusive. Real passing cases and current generations are required; titles, exit code, missing/pending tests and model confidence alone cannot verify. Do not invent coverage for preservation clauses. No separate critic call is required.",
+				"For an unresolved behavioral coverage question, reuse the native decision: include <pramana>{results:[{requirement_id,command,case_names,applicability:SUPPORTED|INCONCLUSIVE,explanation,citations:[{observation_id,quote,role:IMPLEMENTATION|TEST_ASSERTION,case_name?}]}]}</pramana>. Explain how current test assertions cover each original obligation. Cite full current source reads using evidence_index IDs. Each TEST_ASSERTION citation must include case_name and quote exactly one complete named case, starting at test(...) or it(...), with its assertion using the imported implementation. Never combine multiple test definitions into one assertion citation. Reuse the exact per-case citations in validated_check_plans for unchanged sources; these are source-bound plans, not passing verdicts. Implementation must be a current recoverable changed candidate directly imported by that test. Initial rule supports flat named Node tests (node --test file.test.cjs) and specific Vitest files with --run --reporter=json and optional --no-file-parallelism. Named cases must be unique and actually executed; select at most 8 case_names per result and at most 8 test files per command, splitting more than 8 cases across multiple bounded results while still running and reporting every required test; ambiguous nested or indirect assertion coverage remains inconclusive. Real passing cases and current generations are required; titles, exit code, missing/pending tests and model confidence alone cannot verify. Do not invent coverage for preservation clauses. No separate critic call is required.",
+			coverage_schema: CoverageResponseSchema,
+			validated_check_plans: (() => {
+				const plans: CoverageProposal[] = [];
+				const seen = new Set<string>();
+				let bytes = 0;
+				for (const record of this.store.records(state.mission_id).toReversed()) {
+					if (
+						record.record_type !== "EvidenceRecord" ||
+						record.kind !== "INTERPRETATION" ||
+						record.provenance !== "MODEL" ||
+						record.stage !== "pramana" ||
+						!Value.Check(BehaviorPlanSchema, record.payload) ||
+						record.payload.intent_epoch !== (state.intent_epoch ?? 1)
+					)
+						continue;
+					const proposal = record.payload.proposal;
+					const key = `${proposal.requirement_id}:${proposal.command}`;
+					if (seen.has(key)) continue;
+					seen.add(key);
+					if (
+						!state.requirements.some((ref) => {
+							const requirement = this.store.get(state.mission_id, ref, "Requirement");
+							return (
+								requirement.requirement_id === proposal.requirement_id && requirement.status !== "SUPERSEDED"
+							);
+						})
+					)
+						continue;
+					const size = Buffer.byteLength(JSON.stringify(proposal));
+					if (bytes + size > configuration.view.position_chars) continue;
+					bytes += size;
+					plans.push(proposal);
+				}
+				return plans;
+			})(),
+			verification_feedback: this.store
+				.records(state.mission_id)
+				.filter(
+					(record): record is RecordOf<"EvidenceRecord"> =>
+						record.record_type === "EvidenceRecord" &&
+						record.stage === "pramana" &&
+						record.kind === "CONTROL" &&
+						record.payload !== null &&
+						typeof record.payload === "object" &&
+						("rejected_check_plan" in record.payload || "rejected_coverage" in record.payload),
+				)
+				.slice(configuration.view.recent_observations === 0 ? Infinity : -configuration.view.recent_observations)
+				.map((record) => record.payload),
+			coverage_inputs: (() => {
+				const request = this.store
+					.records(state.mission_id)
+					.findLast(
+						(record): record is RecordOf<"EvidenceRecord"> =>
+							record.record_type === "EvidenceRecord" &&
+							record.stage === "pramana" &&
+							record.kind === "CONTROL" &&
+							record.payload !== null &&
+							typeof record.payload === "object" &&
+							"coverage_request_key" in record.payload,
+					);
+				return request?.payload && typeof request.payload === "object" && "coverage_inputs" in request.payload
+					? request.payload.coverage_inputs
+					: { provenance: "OBSERVATION", inputs: [], omitted: [] };
+			})(),
 			evidence_index: this.store
 				.records(state.mission_id)
 				.filter(
@@ -5245,13 +5417,20 @@ export class SandhanaKernel {
 						record.record_type === "EvidenceRecord" && record.kind === "OBSERVATION" && record.stage === "phala",
 				)
 				.slice(configuration.view.recent_observations === 0 ? Infinity : -configuration.view.recent_observations)
-				.map((event) => ({
-					id: event.record_id,
-					generation: event.target_generation,
-					artifact_ref: observationArtifact(event),
-					source: this.contextSource(event),
-					view: "Reference-only untrusted source. Artifact unavailable or expired; digest is not proof until resolved through avartana.",
-				})),
+				.map((event) => {
+					const artifactRef = observationArtifact(event);
+					const artifact = artifactRef ? this.store.get(state.mission_id, artifactRef, "Artifact") : null;
+					return {
+						id: event.record_id,
+						generation: event.target_generation,
+						artifact_ref: artifactRef,
+						source: this.contextSource(event),
+						view:
+							artifact?.available && (artifact.expires_at == null || artifact.expires_at > Date.now())
+								? "Reference-only untrusted source. Reuse the retained tool result when present; otherwise resolve this artifact through avartana. A digest alone does not prove content or behavior."
+								: "Reference-only untrusted source. Artifact unavailable or expired; digest is not proof until resolved through avartana.",
+					};
+				}),
 			instruction:
 				state.stagnation >= configuration.stagnation.diagnose
 					? "Dispatch admits one optional targeted diagnosis per decision. Observe an unresolved requirement or named hypothesis target using an unseen span or changed source bytes; repeated unchanged observations are rejected. For a different effectful attempt, include <yukti>JSON matching hypothesis_schema</yukti> with a new cause/correction mechanism or select a scoped foreground test. Attempted stagnant approaches are retained as REJECTED with their tick evidence. Cosmetic prose, mtime changes and unchanged replacements do not reopen an approach or reset stagnation. Applicable current checks and specific verification repair remain eligible; only actual new evidence resets the counter."
@@ -5399,6 +5578,14 @@ export class SandhanaKernel {
 				? this.store.get(state.mission_id, prior.budget_ref, "BudgetChange")
 				: undefined;
 			const budget = routeBudget(configuration.value, next, configuration.resource_overrides, change);
+			if (
+				canonical(budget.ceilings) !== canonical(state.ceilings) ||
+				budget.verification_reserve !== state.verification_reserve
+			)
+				throw new KernelStop(
+					"BLOCKED",
+					"Route calibration cannot change the captured outer allowance; use an explicit resource amendment",
+				);
 			state.ceilings = budget.ceilings;
 			state.verification_reserve = budget.verification_reserve;
 			state.contract = append("MissionContract", {
@@ -5764,7 +5951,7 @@ export class SandhanaKernel {
 			if (adapter) await dispatch(adapter[0], `quality:${randomUUID()}`, { command });
 		}
 	}
-	finalize(stop?: TerminalStatus, limitation?: string): RecordOf<"TerminalReport"> {
+	finalize(stop?: TerminalStatus, limitation?: string, completionMessage?: string): RecordOf<"TerminalReport"> {
 		if (this.terminal) return this.terminal;
 		if (this.publicOutputStopped()) {
 			stop = "BUDGET_EXHAUSTED";
@@ -5792,7 +5979,6 @@ export class SandhanaKernel {
 		const report = this.assessCandidate(stop, limitation);
 		const results = report.results;
 		const artifacts = report.candidate_refs;
-		const presentation = report.presentation;
 		const allPassed = report.completion_status === "PASSED" && ["PASSED", "NOT_APPLICABLE"].includes(report.quality);
 		const anyFailed = results.some((result) => result.result === "FAILED");
 		const reviewable =
@@ -5811,6 +5997,10 @@ export class SandhanaKernel {
 					: anyFailed
 						? "EXECUTION_FAILED"
 						: "PARTIALLY_COMPLETE");
+		// A native summary is presentation, never acceptance evidence. Preserve
+		// exact-read output and admit a summary only after current proof passes.
+		const presentation =
+			report.presentation ?? (status === "VERIFIED_COMPLETE" && allPassed ? completionMessage : undefined);
 		this.transact((current, append) => {
 			const fields: Draft<"TerminalReport"> = {
 				failure_refs: this.store

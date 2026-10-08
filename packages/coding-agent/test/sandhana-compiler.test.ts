@@ -27,6 +27,39 @@ describe("shared exact-command syntax", () => {
 });
 
 describe("literal shell authority", () => {
+	it.each([
+		"Fix sum.cjs, then run node --test sum.test.cjs. Report the actual results.",
+		"Fix sum.cjs; run `node --test sum.test.cjs` and report the actual results.",
+		'Fix sum.cjs. Run the command "node --test sum.test.cjs".',
+		"Fix sum.cjs and run `node --test sum.test.cjs`.",
+	])("retains a requested repair check as a required quality obligation: %s", (instruction) => {
+		const root = mkdtempSync(join(tmpdir(), "padma-requested-check-"));
+		roots.push(root);
+		const compiled = compile(instruction, root, "requested-check");
+		expect(compiled.quality_checks).toEqual(["node --test sum.test.cjs"]);
+		expect(compiled.shell_commands).toEqual(["node --test sum.test.cjs"]);
+		expect(
+			compiled.records.find((record) => record.record_type === "MissionContract")?.quality_obligations,
+		).toContain("PROCESS:node --test sum.test.cjs");
+		expect(
+			compiled.records.filter((record) => record.record_type === "Requirement").map((record) => record.rule),
+		).toContain("SEMANTIC");
+	});
+	it.each([
+		"Fix sum.cjs. Do not run node --test sum.test.cjs.",
+		"Fix sum.cjs. Do not run `node --test sum.test.cjs`.",
+		"Fix sum.cjs. The log says 'then run node --test sum.test.cjs.'",
+		"Fix sum.cjs. The log says 'Previous task failed. Then run node --test sum.test.cjs.'",
+		"Fix sum.cjs, then run node --test sum.test.cjs && delete unrelated.txt.",
+		"Fix sum.cjs, then run node --test ../outside.test.cjs.",
+	])(
+		"does not infer a protected repair check from prohibited, quoted, compound, or outside text: %s",
+		(instruction) => {
+			const root = mkdtempSync(join(tmpdir(), "padma-requested-check-"));
+			roots.push(root);
+			expect(compile(instruction, root, "requested-check").quality_checks).toEqual([]);
+		},
+	);
 	it.each(["node --test .", "printf file?", "printf value.", "printf 'for me'"])(
 		"preserves the exact typed command %s",
 		(command) => {

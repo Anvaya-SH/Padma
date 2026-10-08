@@ -1,8 +1,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall } from "@anvaya.sh/padma-ai";
+import { type FauxResponseFactory, fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@anvaya.sh/padma-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoverageProposal } from "../../src/core/sandhana/acceptance.ts";
+import { signalsForExact } from "../../src/core/sandhana/code.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 const harnesses: Harness[] = [];
@@ -16,6 +17,67 @@ async function fixture() {
 	return harness;
 }
 describe("real Pi session seam mounted on Sandhana", () => {
+	it("history-backed deep work resolves through the same controller, mission and outer allowance", async () => {
+		const h = await fixture();
+		writeFileSync(join(h.tempDir, "a.txt"), "old");
+		for (const name of ["first.cjs", "second.cjs"])
+			writeFileSync(join(h.tempDir, name), "console.log('refuted'); process.exitCode = 1;");
+		const kernel = h.session.sandhana;
+		let mission = "";
+		let allowance = 0;
+		h.setResponses([
+			...(
+				[
+					["VALIDATE", "node first.cjs"],
+					["NORMALIZE", "node second.cjs"],
+				] as const
+			).map(([mechanism, command]) =>
+				fauxAssistantMessage(
+					[
+						{
+							type: "text",
+							text: `<yukti>${JSON.stringify({ target: ".", cause: "CONFIGURATION", mechanism, failure_signature: "refuted", expected_result: "supported" })}</yukti>`,
+						},
+						fauxToolCall("bash", { command }),
+					],
+					{ stopReason: "toolUse" },
+				),
+			),
+			() => {
+				const state = kernel.state!;
+				mission = state.mission_id;
+				allowance = state.ceilings.execution;
+				const evidence = state.hypotheses.flatMap(
+					(ref) => kernel.store.get(mission, ref, "Hypothesis").contradicting,
+				);
+				const signals = signalsForExact(false);
+				signals.H = { severity: 2, provenance: "HISTORY", evidence };
+				signals.A = { severity: 1, provenance: "HISTORY", evidence };
+				kernel.escalate(signals);
+				expect(kernel.state!.route).toBe("GAMBHIRA");
+				return fauxAssistantMessage(fauxToolCall("write", { path: "a.txt", content: "new" }), {
+					stopReason: "toolUse",
+				});
+			},
+		]);
+		await h.session.prompt(
+			`padma: ${JSON.stringify({
+				objective: "repair requested content after failed approaches",
+				allow_edits: true,
+				shell_commands: ["node first.cjs", "node second.cjs"],
+				requirements: [{ text: "current requested content", rule: "CONTENT", target: "a.txt", expected: "new" }],
+			})}`,
+		);
+		expect(kernel.terminal?.status, JSON.stringify(kernel.terminal)).toBe("VERIFIED_COMPLETE");
+		expect(kernel.state!.mission_id).toBe(mission);
+		expect(kernel.state!.ceilings.execution).toBe(allowance);
+		expect(kernel.state!.used.execution).toBe(3);
+		expect(kernel.state!.used.ticks).toBe(3);
+		expect(kernel.state!.hypotheses).toHaveLength(2);
+		expect(h.getPendingResponseCount()).toBe(0);
+		expect(kernel.store.list(h.sessionManager.getSessionId())).toHaveLength(1);
+		expect(readFileSync(join(h.tempDir, "a.txt"), "utf8")).toBe("new");
+	});
 	it("ordinary resume inspects a lost replacement and runs its real mandatory check without another provider decision", async () => {
 		const h = await fixture();
 		writeFileSync(join(h.tempDir, "a.txt"), "old");
@@ -250,14 +312,42 @@ describe("real Pi session seam mounted on Sandhana", () => {
 					}));
 					return fauxAssistantMessage(`<pramana>${JSON.stringify({ results: proposals })}</pramana>`);
 				},
+				...(!preservation
+					? [
+							((context) => {
+								expect(getCurrentTools(context.messages)).toEqual([]);
+								const kernel = h.session.sandhana;
+								expect(kernel.state!.used.execution).toBe(6);
+								const request = kernel.store
+									.records(kernel.state!.mission_id)
+									.findLast(
+										(record) =>
+											record.record_type === "EvidenceRecord" &&
+											record.payload &&
+											typeof record.payload === "object" &&
+											"coverage_request_key" in record.payload,
+									);
+								expect(request?.record_type === "EvidenceRecord" && request.payload).toMatchObject({
+									planning: false,
+									tools_disabled: true,
+								});
+								expect(readFileSync(join(h.tempDir, "parser.test.cjs"), "utf8")).not.toContain(validCase);
+								return fauxAssistantMessage(
+									"The empty-input case passed, but the supplied test file has no valid-input preservation case. Preservation remains unverified.",
+								);
+							}) satisfies FauxResponseFactory,
+						]
+					: []),
 			]);
 			await h.session.prompt("Fix the parser accepting an invalid empty value; preserve valid existing values");
 			const kernel = h.session.sandhana;
-			expect(kernel.terminal?.status).toBe(preservation ? "VERIFIED_COMPLETE" : "PARTIALLY_COMPLETE");
+			expect(kernel.terminal?.status, JSON.stringify(kernel.terminal)).toBe(
+				preservation ? "VERIFIED_COMPLETE" : "PARTIALLY_COMPLETE",
+			);
 			expect(kernel.terminal?.verified).toHaveLength(preservation ? 2 : 1);
 			expect(kernel.state!.requirements).toHaveLength(2);
 			expect(kernel.state!.used.execution).toBe(6);
-			expect(kernel.state!.used.ticks).toBe(5);
+			expect(kernel.state!.used.ticks).toBe(preservation ? 5 : 6);
 			expect(h.getPendingResponseCount()).toBe(0);
 			expect(h.eventsOfType("tool_execution_end")).toHaveLength(6);
 			expect(kernel.store.list(h.sessionManager.getSessionId())).toHaveLength(1);
@@ -276,8 +366,9 @@ describe("real Pi session seam mounted on Sandhana", () => {
 				.getBranch()
 				.filter((entry) => entry.type === "message" && entry.message.role === "toolResult"),
 		).toHaveLength(1);
-		expect(h.session.getLastAssistantText()).toContain("VERIFIED_COMPLETE");
-		expect(h.session.getLastAssistantText()).toContain("hello\n");
+		expect(h.session.getLastAssistantText()).toContain("Completed and verified.");
+		expect(h.session.getLastAssistantText()).toContain("hello");
+		expect(h.session.sandhana.terminal?.presentation).toBe("hello\n");
 	});
 	it("an explicit client resume keeps the mission ledger and old report through the ordinary prompt API", async () => {
 		const h = await fixture();
@@ -295,8 +386,8 @@ describe("real Pi session seam mounted on Sandhana", () => {
 		expect(kernel.store.list(h.sessionManager.getSessionId())).toHaveLength(1);
 		expect(h.eventsOfType("tool_execution_end")).toHaveLength(2);
 		await h.session.prompt("resume does-not-exist");
-		expect(h.session.getLastAssistantText()).toContain("BLOCKED");
-		expect(h.session.getLastAssistantText()).not.toContain("VERIFIED_COMPLETE");
+		expect(h.session.getLastAssistantText()).toContain("information or permission");
+		expect(h.session.getLastAssistantText()).not.toContain("Completed and verified.");
 		expect(kernel.state!.used.execution).toBe(2);
 	});
 	it("native provider tool selection and streaming drive a guarded edit and targeted real test", async () => {
@@ -402,7 +493,7 @@ describe("real Pi session seam mounted on Sandhana", () => {
 			})}`,
 		);
 		const kernel = h.session.sandhana;
-		expect(kernel.terminal?.status).toBe("VERIFIED_COMPLETE");
+		expect(kernel.terminal?.status, JSON.stringify(kernel.terminal)).toBe("VERIFIED_COMPLETE");
 		expect(kernel.store.list(h.sessionManager.getSessionId())).toHaveLength(1);
 		expect(kernel.state!.used.execution).toBe(4);
 		expect(kernel.state!.used.ticks).toBe(5);

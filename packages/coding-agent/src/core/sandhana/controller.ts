@@ -13,6 +13,7 @@ import type {
 import {
 	type AssistantMessage,
 	contentText,
+	getCurrentSystemMessage,
 	type JsonObject,
 	type Message,
 	normalizeContext,
@@ -28,9 +29,10 @@ import { KernelStop, type SandhanaKernel } from "./kernel.ts";
 import { estimateModelCost } from "./model-cost.ts";
 import { boundedModelPayload, validateModelSampling } from "./model-request.ts";
 import type { OperationDependency } from "./operations.ts";
-import { publicAgentEvent } from "./public-output.ts";
+import { harnessInstructions } from "./prompt.ts";
+import { assistantVisibleText, publicAgentEvent } from "./public-output.ts";
 import type { TerminalStatus } from "./records.ts";
-import { userTerminalText } from "./reporting.ts";
+import { userFacingOperationStatus, userFacingStop, userTerminalText } from "./reporting.ts";
 
 /** Reuses Pi's streaming and validated executor, not Pi's continuation/terminal loop. Public tools are governed wrappers. */
 export class SandhanaController implements AgentLoopController {
@@ -115,10 +117,16 @@ export class SandhanaController implements AgentLoopController {
 			const toolCallId = `operation:${schedule.operation_id}`;
 			const args = { action: "inspect", id: schedule.operation_id };
 			const partialResult = {
-				content: [{ type: "text" as const, text: `${schedule.status}: ${schedule.reason}` }],
+				content: [
+					{
+						type: "text" as const,
+						text: userFacingOperationStatus(schedule.status) ?? "Checking command status.",
+					},
+				],
 				details: {
 					operation_id: schedule.operation_id,
 					scheduling_state: schedule.status,
+					reason: schedule.reason,
 					progress_refs: schedule.progress_refs,
 					execution_refs: schedule.execution_refs ?? [],
 					dependencies: schedule.dependencies,
@@ -210,8 +218,8 @@ export class SandhanaController implements AgentLoopController {
 				}
 			});
 		let coverageOnly = false;
-		const continueAfterChecks = (): boolean => {
-			if (this.kernel.beginCoverageAssessment()) {
+		const continueAfterChecks = (submittedCandidate = false): boolean => {
+			if (this.kernel.beginCoverageAssessment(submittedCandidate)) {
 				coverageOnly = true;
 				return true;
 			}
@@ -310,6 +318,11 @@ export class SandhanaController implements AgentLoopController {
 					stop = stopped.details.sandhana_stop as TerminalStatus;
 					limitation = contentText(stopped.content, "");
 				}
+				const failed = results.messages.find((result) => result.isError);
+				if (!stopped && failed && compiled.exact) {
+					stop = "EXECUTION_FAILED";
+					limitation = contentText(failed.content, "");
+				}
 				context.messages.push(...results.messages);
 				messages.push(...results.messages);
 				await emit({ type: "turn_end", message: proposal, toolResults: results.messages });
@@ -378,10 +391,18 @@ export class SandhanaController implements AgentLoopController {
 						await append({
 							role: "system",
 							content:
-								"For this next response only, assess retained named tests and cited current source. Tools are disabled. If the check has not run, return a bounded <pramana_plan> using the coverage results schema to select exact cases and a scoped command. If it has run, return <pramana> coverage results, or explain why coverage is inconclusive. A plan establishes no passing verdict. Do not propose further tools.",
+								"For this next response only, assess retained named tests and cited current source. Tools are disabled. The bounded coverage_inputs supply actual retained source text and check output with observation IDs; omitted inputs remain unavailable. If the check has not run, return a bounded <pramana_plan> using the coverage results schema to select exact cases and a scoped command. If it has run, return <pramana> coverage results, reusing the exact per-case citations and case_names from validated_check_plans for unchanged sources, or explain why coverage is inconclusive. Every TEST_ASSERTION citation needs case_name and exactly one complete test definition; a whole test file is not one case. A plan establishes no passing verdict. Do not propose further tools.",
 							timestamp: 0,
 						});
 					}
+					const guide = harnessInstructions(context.tools ?? []);
+					if (getCurrentSystemMessage(context.messages)?.sections?.padma_harness !== guide)
+						await append({
+							role: "system",
+							content: "",
+							sections: { padma_harness: guide },
+							timestamp: 0,
+						});
 					const position = {
 						role: "system" as const,
 						content: JSON.stringify(modelSafe(JSON.parse(this.kernel.position()))),
@@ -417,6 +438,7 @@ export class SandhanaController implements AgentLoopController {
 						compacted = true;
 					}
 					context.messages = packet.messages;
+					const operationSequence = this.kernel.operations.controllerSequence;
 					const { response, reservation: reserved } = await this.requestModel(
 						context,
 						{
@@ -425,9 +447,23 @@ export class SandhanaController implements AgentLoopController {
 								const transformed = config.transformContext
 									? await config.transformContext(items, abort)
 									: items;
+								// Prompt replacement hooks may remove sections. Restore the actual
+								// callable guide before sizing and admitting the provider request.
+								const guided =
+									getCurrentSystemMessage(transformed)?.sections?.padma_harness === guide
+										? transformed
+										: [
+												...transformed,
+												{
+													role: "system" as const,
+													content: "",
+													sections: { padma_harness: guide },
+													timestamp: 0,
+												},
+											];
 								return assemblePacket(
 									this.kernel.missionPosition(),
-									transformed,
+									guided,
 									context.tools ?? [],
 									config.model.contextWindow,
 									outputLimit,
@@ -508,11 +544,27 @@ export class SandhanaController implements AgentLoopController {
 						continue;
 					}
 					if (
-						(!calls.length || this.kernel.ready() || this.kernel.verificationDue()) &&
+						!this.kernel.operations.hasPending() &&
+						this.kernel.operations.controllerSequence !== operationSequence
+					) {
+						// Completion can race with a provider decision to wait. Feed the
+						// settled references back before accepting that decision as final.
+						this.kernel.finishCognitiveTick();
+						await append({
+							role: "system",
+							content: `Operation update: ${JSON.stringify(this.kernel.operations.list())}`,
+							timestamp: Date.now(),
+						});
+						continue;
+					}
+					if (
+						(!calls.length ||
+							(this.kernel.ready() && this.kernel.operations.list().length === 0) ||
+							this.kernel.verificationDue()) &&
 						!this.kernel.operations.hasPending()
 					) {
 						await runAcceptanceChecks();
-						const repairing = continueAfterChecks();
+						const repairing = continueAfterChecks(response.stopReason === "stop" && !calls.length);
 						this.kernel.finishCognitiveTick();
 						if (repairing) {
 							this.kernel.governCognitiveTick();
@@ -553,9 +605,16 @@ export class SandhanaController implements AgentLoopController {
 			}
 		}
 		const state = this.kernel.state;
+		const lastReply = messages.findLast((message) => message.role === "assistant");
+		const completionMessage =
+			lastReply?.role === "assistant" &&
+			lastReply.stopReason === "stop" &&
+			!lastReply.content.some((part) => part.type === "toolCall")
+				? assistantVisibleText(contentText(lastReply.content, "")) || undefined
+				: undefined;
 		const report =
 			state && (accepted || openedRun() || stop === "OUTCOME_UNKNOWN")
-				? this.kernel.finalize(stop, limitation)
+				? this.kernel.finalize(stop, limitation, completionMessage)
 				: null;
 		if (report && this.kernel.state) {
 			try {
@@ -566,20 +625,23 @@ export class SandhanaController implements AgentLoopController {
 		}
 		const finalText = report
 			? userTerminalText(report)
-			: `${stop ?? "BLOCKED"}\n${limitation ?? "Mission compilation failed; no action dispatched"}`;
+			: userFacingStop(stop ?? "BLOCKED", limitation ?? "Could not understand the request; no action was run.");
 		const final = this.assistant(config, finalText);
-		const lastReply = messages.findLast((message) => message.role === "assistant");
 		const conversationalReply =
 			conversationalScope &&
 			report?.status === "PARTIALLY_COMPLETE" &&
-			state?.used.execution === 0 &&
 			!stop &&
 			lastReply?.role === "assistant" &&
 			lastReply.stopReason === "stop" &&
+			!lastReply.content.some((part) => part.type === "toolCall") &&
 			contentText(lastReply.content, "").trim().length > 0 &&
-			!messages.some(
-				(message) => message.role === "assistant" && message.content.some((part) => part.type === "toolCall"),
-			);
+			!messages.some((message) => message.role === "toolResult" && message.isError) &&
+			state?.operations.every((ref) => {
+				const operation = this.kernel.store.get(state.mission_id, ref, "OperationRecord");
+				const action = this.kernel.store.get(state.mission_id, operation.prepared_ref, "PreparedAction");
+				const schema = this.kernel.store.get(state.mission_id, action.schema_ref, "RegisteredActionSchema");
+				return operation.status === "CONFIRMED_COMPLETE" && !schema.side_effect;
+			});
 		try {
 			if (!conversationalReply) {
 				await append(final);
@@ -725,7 +787,7 @@ export class SandhanaController implements AgentLoopController {
 			name: "sandhana_operation",
 			label: "Operations",
 			description:
-				"Durable parent-mission operations for genuinely background or long-running work only. Run an ordinary single shell command with the bash tool directly; do not submit it here. Submit a registered tool and arguments, with dependencies requiring EFFECT_CONFIRMED or PROCESS_SUCCEEDED. Only separate local reads may overlap; shell and writes are ordered. Inspect returns scheduling and effect states, progress references and validated runtime handles. Output retrieves one bounded artifact slice. Cancellation is a request, not rollback. Reconciliation never retries uncertain effects. When waiting, end the turn without narrating queue state; the controller waits for events without polling the model and without user-facing progress chatter.",
+				"Durable parent-mission operations for genuinely background or long-running work only. Run an ordinary single shell command with the bash tool directly; do not submit it here. Submit a registered tool and arguments, with dependencies requiring EFFECT_CONFIRMED or PROCESS_SUCCEEDED. Only separate local reads may overlap; shell and writes are ordered. Inspect returns scheduling and effect states, progress references and validated runtime handles. Output retrieves one bounded artifact slice; omit ref for the latest retained result or progress, or supply a result/progress reference from inspect or the operation update. Cancellation is a request, not rollback. Reconciliation never retries uncertain effects. When waiting, end the turn without narrating queue state; the controller waits for events without polling the model and without user-facing progress chatter.",
 			parameters: Type.Object(
 				{
 					action: Type.Union([
@@ -746,7 +808,9 @@ export class SandhanaController implements AgentLoopController {
 							}),
 						),
 					),
-					ref: Type.Optional(Type.String()),
+					ref: Type.Optional(
+						Type.String({ description: "Output reference; default latest retained result or progress" }),
+					),
 					offset: Type.Optional(Type.Integer({ minimum: 0 })),
 					limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 8192 })),
 				},
@@ -777,13 +841,18 @@ export class SandhanaController implements AgentLoopController {
 						};
 					} else {
 						if (!args.id) throw new Error("Operation ID is required");
+						let outputRef = args.ref ?? "";
+						if (args.action === "output" && args.ref === undefined) {
+							const current = this.kernel.operations.inspect(args.id);
+							outputRef = current.effect.result_refs.at(-1) ?? current.schedule.progress_refs.at(-1) ?? "";
+						}
 						result =
 							args.action === "cancel"
 								? this.kernel.operations.cancel(args.id)
 								: args.action === "reconcile"
 									? await this.kernel.operations.reconcile(args.id)
 									: args.action === "output"
-										? this.kernel.operations.readOutput(args.id, args.ref ?? "", args.offset, args.limit)
+										? this.kernel.operations.readOutput(args.id, outputRef, args.offset, args.limit)
 										: this.kernel.operations.reconnect(args.id);
 					}
 					return this.kernel.operationControlOutput({

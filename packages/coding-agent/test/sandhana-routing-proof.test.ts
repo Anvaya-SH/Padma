@@ -286,7 +286,8 @@ describe("store routing proof boundary", () => {
 		expect(after.used).toEqual(before.used);
 		expect(after.used.execution).toBe(2);
 		expect(after.started_at).toBe(before.started_at);
-		expect(after.ceilings.execution).toBe(100);
+		expect(after.ceilings).toEqual(before.ceilings);
+		expect(after.verification_reserve).toBe(before.verification_reserve);
 		expect(after.hypotheses).toEqual(before.hypotheses);
 		for (const record of history)
 			expect(f.store.get(record.mission_id, record.record_id, record.record_type)).toEqual(record);

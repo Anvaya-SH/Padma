@@ -19,6 +19,8 @@ import { compile } from "../src/core/sandhana/compiler.ts";
 import { SandhanaKernel } from "../src/core/sandhana/kernel.ts";
 import { privateMissionDirectory } from "../src/core/sandhana/private-store.ts";
 import { MissionStore } from "../src/core/sandhana/store.ts";
+import { assertShellDispatchReady } from "../src/core/tools/dispatch-guard.ts";
+import { getShellEnv } from "../src/utils/shell.ts";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -71,7 +73,9 @@ describe.skipIf(process.platform !== "win32")("Windows private mission history",
 				label: "Lost fixture response",
 				description: "Fixture mutation",
 				parameters: Type.Object({ command: Type.String() }),
-				execute: async () => {
+				execute: async (_callId, value) => {
+					const args = value as { command: string };
+					assertShellDispatchReady({ command: args.command, cwd: f.cwd, env: getShellEnv() });
 					invocations++;
 					writeFileSync(join(f.cwd, "a.txt"), "possible effect");
 					throw new Error("fixture response lost");

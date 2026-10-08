@@ -4,6 +4,8 @@ import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 type SubmitContext = {
 	defaultEditor: { onSubmit?: (text: string) => void };
 	editor: {
+		onSubmit?: (text: string) => void;
+		getText: () => string;
 		addToHistory?: (text: string) => void;
 		setText: (text: string) => void;
 	};
@@ -19,6 +21,8 @@ type SubmitContext = {
 	welcomeSubmittedSessionId?: string;
 	onInputCallback?: (text: string) => void;
 	pendingUserInputs: string[];
+	startupSubmitPending?: string;
+	showError: (message: string) => void;
 };
 
 type InputContext = {
@@ -27,6 +31,7 @@ type InputContext = {
 };
 
 type StartupSubmitContext = {
+	startupSubmitPending?: string;
 	editor: { setText: (text: string) => void };
 	showStatus: (message: string) => void;
 };
@@ -54,6 +59,7 @@ function createSubmitContext(): SubmitContext {
 	return {
 		defaultEditor: {},
 		editor: {
+			getText: () => "",
 			addToHistory: vi.fn(),
 			setText: vi.fn(),
 		},
@@ -67,6 +73,7 @@ function createSubmitContext(): SubmitContext {
 		flushPendingBashComponents: vi.fn(),
 		ui: { requestRender: vi.fn() },
 		pendingUserInputs: [],
+		showError: vi.fn(),
 	};
 }
 
@@ -80,7 +87,29 @@ describe("InteractiveMode startup input", () => {
 		interactiveModePrototype.handleStartupSubmit.call(context, "early prompt");
 
 		expect(context.editor.setText).toHaveBeenCalledWith("early prompt");
+		expect(context.startupSubmitPending).toBe("early prompt");
 		expect(context.showStatus).toHaveBeenCalledWith("Ārambha [starting] · Preparing your workspace…");
+	});
+	it("forwards an early submission once through the ready handler", () => {
+		const context = createSubmitContext();
+		context.startupSubmitPending = "early prompt";
+		context.editor.getText = () => "early prompt";
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+		expect(context.pendingUserInputs).toEqual(["early prompt"]);
+		expect(context.editor.setText).toHaveBeenCalledWith("");
+		expect(context.startupSubmitPending).toBeUndefined();
+		expect(context.editor.onSubmit).toBe(context.defaultEditor.onSubmit);
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+		expect(context.pendingUserInputs).toEqual(["early prompt"]);
+	});
+	it("retains a changed draft instead of submitting cancelled startup text", () => {
+		const context = createSubmitContext();
+		context.startupSubmitPending = "early prompt";
+		context.editor.getText = () => "revised draft";
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+		expect(context.pendingUserInputs).toEqual([]);
+		expect(context.editor.setText).not.toHaveBeenCalled();
+		expect(context.startupSubmitPending).toBeUndefined();
 	});
 
 	it("queues a normal prompt submitted before the input callback is installed", async () => {

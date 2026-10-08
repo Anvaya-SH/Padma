@@ -1,9 +1,13 @@
 import { types } from "node:util";
-import type { AgentEvent } from "@anvaya.sh/padma-agent-core";
+import type { AgentEvent, AgentMessage, AgentToolResult } from "@anvaya.sh/padma-agent-core";
+import { Value } from "typebox/value";
+import { isFailure } from "./errors.ts";
+import { TerminalStatusSchema } from "./records.ts";
 import { redact } from "./redaction.ts";
+import { userFacingStop } from "./reporting.ts";
 
 const PRIVATE_FIELD =
-	/^(?:password|passwd|secret|api[_-]?key|authorization|proxy[_-]?authorization|cookie|set[_-]?cookie|(?:access|refresh|id)[_-]?token|client[_-]?secret|private[_-]?key)$/i;
+	/^(?:password|passwd|secret|token|api[_-]?key|authorization|proxy[_-]?authorization|cookie|set[_-]?cookie|(?:access|refresh|id)[_-]?token|client[_-]?secret|private[_-]?key)$/i;
 
 /** Public protocol values are copies. Accessors, runtime objects and private credential fields never reach JSON. */
 export function publicOutput(value: unknown, maxBytes = 8 * 1024 * 1024): unknown {
@@ -63,6 +67,52 @@ export function publicOutput(value: unknown, maxBytes = 8 * 1024 * 1024): unknow
 	return project(value, 0);
 }
 
+/** Control proposals stay in the provider transcript; presentation contains the useful answer. */
+export function assistantVisibleText(text: string): string {
+	return text.replace(/<(yukti|pramana_plan|pramana)>[\s\S]*?(?:<\/\1>|$)/g, "").trim();
+}
+
+function visibleToolResult<T extends { content: AgentToolResult<unknown>["content"]; details?: unknown }>(
+	result: T,
+): T {
+	const details: unknown = result.details;
+	if (
+		!details ||
+		typeof details !== "object" ||
+		!("sandhana_stop" in details) ||
+		!Value.Check(TerminalStatusSchema, details.sandhana_stop)
+	)
+		return result;
+	return {
+		...result,
+		content: [
+			{
+				type: "text",
+				text: userFacingStop(
+					details.sandhana_stop,
+					"sandhana_failure" in details && isFailure(details.sandhana_failure)
+						? details.sandhana_failure.explanation
+						: result.content
+								.filter((part) => part.type === "text")
+								.map((part) => part.text)
+								.join("\n"),
+				),
+			},
+		],
+	};
+}
+
+function visibleMessage<T extends AgentMessage>(message: T): T {
+	if (message.role === "toolResult") return { ...message, ...visibleToolResult(message) };
+	if (message.role !== "assistant") return message;
+	return {
+		...message,
+		content: message.content.map((part) =>
+			part.type === "text" ? { ...part, text: assistantVisibleText(part.text) } : part,
+		),
+	};
+}
+
 /** Credential fragments cannot be retracted after display. Publish complete blocks and the final message instead. */
 export function publicAgentEvent(event: AgentEvent, maxBytes = 8 * 1024 * 1024): AgentEvent | null {
 	if (
@@ -70,5 +120,26 @@ export function publicAgentEvent(event: AgentEvent, maxBytes = 8 * 1024 * 1024):
 		["text_delta", "thinking_delta", "toolcall_delta"].includes(event.assistantMessageEvent.type)
 	)
 		return null;
-	return publicOutput(event, maxBytes) as AgentEvent;
+	const projected = publicOutput(event, maxBytes) as AgentEvent;
+	if (projected.type === "message_start" || projected.type === "message_end")
+		return { ...projected, message: visibleMessage(projected.message) };
+	if (projected.type === "message_update") {
+		const update = projected.assistantMessageEvent;
+		const visible = "partial" in update ? { ...update, partial: visibleMessage(update.partial) } : update;
+		return {
+			...projected,
+			message: visibleMessage(projected.message),
+			assistantMessageEvent:
+				visible.type === "text_end" ? { ...visible, content: assistantVisibleText(visible.content) } : visible,
+		};
+	}
+	if (projected.type === "tool_execution_end") return { ...projected, result: visibleToolResult(projected.result) };
+	if (projected.type === "turn_end")
+		return {
+			...projected,
+			message: visibleMessage(projected.message),
+			toolResults: projected.toolResults.map(visibleToolResult),
+		};
+	if (projected.type === "agent_end") return { ...projected, messages: projected.messages.map(visibleMessage) };
+	return projected;
 }
